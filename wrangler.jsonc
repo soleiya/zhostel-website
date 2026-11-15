@@ -1,0 +1,17 @@
+// Cloudflare (Workers static assets) — the Z Hostel website.
+// Build command (Cloudflare → Settings → Build): python3 export_public.py
+// It copies only the public site into ./public; that folder is what gets published.
+// SQL, Edge Function code and scripts stay out of the site.
+{
+  "name": "zhostel-website",
+  "compatibility_date": "2026-10-01",
+  // Staging: the site is served at https://zhostel-website.<account>.workers.dev
+  // until zhostel.com is pointed here. Switch both to false at go-live (as VBR did).
+  "workers_dev": true,
+  "preview_urls": true,
+  "assets": {
+    "directory": "./public",
+    "not_found_handling": "404-page",
+    "html_handling": "auto-trailing-slash"
+  }
+}
