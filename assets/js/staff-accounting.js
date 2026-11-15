@@ -16,7 +16,7 @@
   var D = window.VBRDash;
   if (!D || !D.sb) return;
   var sb = D.sb, esc = D.esc;
-  var ACCOUNTING_STAFF = ["mae@staff.local"];
+  var ACCOUNTING_STAFF = []; // Z Hostel accounting-only logins (none yet)
   var dashScreen = document.getElementById("dashScreen");
 
   function store(k, v) { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) { return null; } }

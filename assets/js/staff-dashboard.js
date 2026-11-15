@@ -14,30 +14,8 @@
   // raw email address. Falls back to the email's first part for anyone
   // signing in with an address not in this list.
   var STAFF_EMAIL_NAMES = {
-    "oriel@zhostel.com": "Oriel",
-    "chesca@zhostel.com": "Chesca",
-    "shan@zhostel.com": "Shan",
-    "reymer@zhostel.com": "Reymer",
-    "camile@zhostel.com": "Camile",
-    "jackie@zhostel.com": "Jackie",
-    "jhoms@zhostel.com": "Jhoms",
-    "carmela@zhostel.com": "Carmela",
-    "sugar@zhostel.com": "Sugar",
-    "harly@zhostel.com": "Harly",
-    "bea@zhostel.com": "Bea",
-    "aubrey@zhostel.com": "Aubrey",
-    "marison@zhostel.com": "Marison",
-    "sjc@zhostel.com": "SJC",
-    "rm@zhostel.com": "RM",
-    "gwen@zhostel.com": "Gwen",
-    "msnikka@zhostel.com": "Ms. Nikka",
-    "fo@staff.local": "FO",
-    "sugar@staff.local": "Sugar",
-    "mae@staff.local": "Mae (Accounting)",
+    // Z Hostel staff logins → display names (others show the part before the @).
     "miguel@staff.local": "Miguel",
-    "nicho@staff.local": "Nicho",
-    "tristan@staff.local": "Tristan",
-    "fo@zhostel.com": "FO",
   };
   var currentStaffName = null;
 

@@ -3,9 +3,9 @@
 // It copies only the public site into ./public; that folder is what gets published.
 // SQL, Edge Function code and scripts stay out of the site.
 {
-  "name": "zhostel-website",
+  "name": "zhostel",
   "compatibility_date": "2026-10-01",
-  // Staging: the site is served at https://zhostel-website.<account>.workers.dev
+  // Staging: the site is served at https://zhostel.<account>.workers.dev
   // until zhostel.com is pointed here. Switch both to false at go-live (as VBR did).
   "workers_dev": true,
   "preview_urls": true,

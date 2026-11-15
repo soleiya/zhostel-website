@@ -5,11 +5,11 @@ The site is plain static files. Cloudflare builds it from this repo on every pus
 ## One-time: connect the repo (Cloudflare dashboard, account owner)
 1. Cloudflare → **Workers & Pages** → **Create** → **Import a repository** → GitHub →
    pick `soleiya/zhostel-website` (install / allow the Cloudflare GitHub app for it if asked).
-2. Project name: `zhostel-website`. Production branch: `main`.
+2. Project name: `zhostel` (must match `name` in wrangler.jsonc). Production branch: `main`.
 3. Build command: `python3 export_public.py` · Deploy command: `npx wrangler deploy` (default).
    `wrangler.jsonc` publishes `./public`, which the build fills with the public site only
    (no SQL, function code or scripts).
-4. Save and deploy. The staging link is `https://zhostel-website.<your-account>.workers.dev`
+4. Save and deploy. The staging link is `https://zhostel.<your-account>.workers.dev`
    (shown on the project page). Every other branch gets its own preview link.
 
 ## Photos
