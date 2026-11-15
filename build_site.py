@@ -404,7 +404,7 @@ def build_home():
 <h2 class="section-title" style="text-align:left">Where Poblacion started</h2>
 <p><strong>Z Hostel is the original Poblacion hostel</strong> &mdash; the social heart of Makati's most famous neighborhood, on Don Pedro Street in Barangay Poblacion. Since 2015 &mdash; long before every corner here had a cocktail bar &mdash; travelers and locals have been meeting on the Z Roofdeck. Poblacion grew up around us, and we're still at the center of it.</p>
 <p>Stay in a comfy dorm bed or a private room, eat at the Z Cafe, catch the daily Sunset Session on the world-renowned <strong>Z Roofdeck</strong>, then walk out the door into the bars, restaurants and street food of Poblacion. Breakfast is included with every bed and room.</p>
-<p>In 2017 we took the party onto the street: <a class="text-link" href="/z-street/">Z Street</a>, our Halloween, Rev Up, Repoblacion and Christmas street parties, has brought more than 300,000 people to Poblacion.</p>
+<p>In 2017 we took the party onto the street: <a class="text-link" href="/z-street/">Z Street</a>, our Halloween, Rev Up, Repoblacion and Summer Kick Off street parties with PLUD, has brought more than 300,000 people to Poblacion.</p>
 <p><a class="btn btn-dark" href="{e(BOOK_URL)}">Book your stay</a> <a class="text-link" href="/about-z/">Read the Z story &rarr;</a></p>
 </div>
 <ul class="why-direct" aria-label="Why book direct">{why}</ul></div>{facts_band()}</div></section>
@@ -434,7 +434,7 @@ def build_about():
     body = f"""<section class="section"><div class="container"><div class="prose">
 <p class="eyebrow">The OG of Poblacion</p><h2 class="section-title" style="text-align:left">The original Poblacion hostel</h2>
 <p>Ask anyone who has been around Manila's nightlife long enough where the Poblacion scene began, and Z Hostel comes up. When we opened on Don Pedro Street in 2015, Poblacion was a quiet, old corner of Makati of small houses, sari-sari stores and a handful of hole-in-the-wall bars. We built a hostel with a higher standard of beds, a real cafe and a roof deck where travelers and locals could meet &mdash; and the neighborhood came alive around it.</p>
-<p>In 2017 we took the party outside. Z Street &mdash; co-organized with Poblacion Land &amp; Urban Development Corp. (PLUD) &mdash; closed the streets around the hostel for block parties: Halloween, St. Patrick's Day, Cinco de Mayo and Repoblacion on Independence Day. More than 30 neighborhood venues now join in, the Makati Tourism Office endorses the calendar, and over 300,000 people have come to <a href="/z-street/">Z Street</a>.</p>
+<p>In 2017 we took the party outside. Z Street &mdash; co-organized with Poblacion Land &amp; Urban Development Corp. (PLUD) &mdash; closed the streets around the hostel for block parties: Halloween, St. Patrick's Day (now Summer Kick Off), Cinco de Mayo (now Rev Up) and Repoblacion on Independence Day. More than 30 neighborhood venues now join in, the Makati Tourism Office endorses the calendar, and over 300,000 people have come to <a href="/z-street/">Z Street</a>.</p>
 <p>Today Poblacion is Manila's best-known food and nightlife district, and Z Hostel is still its center: the place backpackers, digital nomads and Manila locals meet, the starting point of the daily walking tour, and home of the legendary Z Roofdeck.</p>
 <p><a class="btn btn-dark" href="{e(BOOK_URL)}">Stay at the original</a></p></div></div></section>
 <section class="section"><div class="container text-center">
@@ -616,7 +616,8 @@ def build_contact():
 
 
 # ============================================================== Z STREET
-# Public facts from Z Hostel's own Scale & Impact profile (Oct 2026). Internal figures (revenue,
+# Public facts from Z Hostel's own Scale & Impact profile (Oct 2026) and the archived ody-z site
+# (The Legend / The Block pages). The Ody-Z event itself did not happen; Halloween 2026 was Tabi Tabi Po. Internal figures (revenue,
 # sponsorship terms, budgets, audience data) are deliberately not published.
 ZS_TIMELINE = [
     ("2015", "Z Hostel opens", "Z Hostel opens on Don Pedro Street, on a then-overlooked stretch of Poblacion, Makati."),
@@ -627,11 +628,11 @@ ZS_TIMELINE = [
     ("2023", "Haunted Hallow Bash", "The Makati Tourism Office formally endorses the Z Street event calendar."),
     ("2024", "Red Nights Halloween", "25,000 people across Don Pedro, Alfonso and Fermina Streets &mdash; and the first Christmas Street Party in December."),
     ("2025", "Halloween Shadow Realm", "About 22,000 people; covered by When In Manila, ABS-CBN, Traveloka and Tripzilla as one of Manila's biggest Halloween events."),
-    ("2026", "Rev Up &amp; The Ody-Z", "Rev Up takes over Don Pedro, Alfonso and Fermina Streets in May; The Ody-Z Halloween homecoming runs across Z Hostel and the Vine Building on October 30."),
+    ("2026", "Rev Up &amp; Tabi Tabi Po", "Rev Up takes over Don Pedro, Alfonso and Fermina Streets as a free summer street party in May, and Halloween 2026 &mdash; <strong>Tabi Tabi Po</strong> &mdash; is one of the most successful Z Street nights yet."),
 ]
 ZS_CALENDAR = [("March", "Summer Kick Off", "formerly St. Patrick's Day"), ("May", "Rev Up", "formerly Cinco de Mayo"),
                ("June", "Repoblacion", "Philippine Independence Day street party"), ("October", "Halloween", "the biggest night of the year, up to 25,000 people"),
-               ("December", "Holiday Bazaar / Christmas Street Party", "")]
+               ("December 31", "New Year's Eve", "Z Hostel's own countdown party")]
 ZS_MEDIA = [("Manila Bulletin", "Budweiser-Powered Manila's Biggest Halloween Street Party After Two Years", "2022"),
             ("Primer", "Zombie Street at Poblacion is the Halloween Party You Should Not Miss", "2019"),
             ("The Scoop", "What Went Down at This Year's Z Street in Poblacion", "2019"),
@@ -644,8 +645,8 @@ ZS_MEDIA = [("Manila Bulletin", "Budweiser-Powered Manila's Biggest Halloween St
 ZS_VENUES = ["The Apartment", "Green Door", "The Ruins", "Kampai", "Only Pans", "Keepers", "Wantusawa", "Ebi10", "Japonesa",
              "Spirits Library", "Tiabuela", "Alamat", "Buccaneers", "Mahalo", "White Banana", "Peruana", "Bibio", "Sulok",
              "Catch 22", "Notorious HQ", "El Chupacabra", "Nolita Joe's", "Virtue &amp; Vice"]
-ZS_ARTISTS = ["Rivermaya", "Mayonnaise", "Ebe Dancel", "Marina Summers", "DJ Cupcakes", "Butta B", "Jason Dhakal", "Jess Connelly", "Nix Damn P!", "Francz Glee", "DJ Matthiaos"]
-ZS_FACTS = [("2015", "Z Hostel opens in Poblacion"), ("2017", "first Z Street party"), ("25", "street parties since 2017"),
+ZS_ARTISTS = ["Rivermaya", "Mayonnaise", "Ebe Dancel", "Juan Karlos Labajo", "Jason Dhakal", "Jess Connelly", "Marina Summers", "DJ Cupcakes", "Butta B", "Nix Damn P!", "DJ Ron Poe", "DJ Matthiaos"]
+ZS_FACTS = [("2015", "Z Hostel opens in Poblacion"), ("2017", "first Z Street party"), ("25+", "street parties since 2017"),
             ("300,000+", "people at Z Street since 2017"), ("25,000", "at a single Halloween night"), ("30+", "Poblacion venues join in")]
 
 
@@ -661,13 +662,16 @@ def build_zstreet():
     body = f"""<section class="section"><div class="container"><div class="prose">
 <p class="eyebrow">Poblacion is Z. Z is Poblacion.</p>
 <h1>Z Street: the street parties that made Poblacion</h1>
-<p class="lead">In 2017, two years after Z Hostel opened on Don Pedro Street, its founders took the party out of the hostel and onto the street. Z Street &mdash; co-organized with Poblacion Land &amp; Urban Development Corp. (PLUD) &mdash; turned a quiet corner of Makati into the city's nightlife capital. Say &ldquo;Poblacion&rdquo; today and most people think of Z in the same breath.</p>
+<p class="lead">Eleven years of building the culture. In 2017, two years after Z Hostel opened on Don Pedro Street, its founders took the party out of the hostel and onto the street. Z Street &mdash; co-organized with Poblacion Land &amp; Urban Development Corp. (PLUD) &mdash; turned a quiet corner of Makati into the city's nightlife capital. Say &ldquo;Poblacion&rdquo; today and most people think of Z in the same breath.</p>
 </div>{facts_band()}<div class="prose">
 <h2>Why Z Street exists</h2>
 <p><strong>&ldquo;Keep the streets alive and safe, so everyone can be themselves.&rdquo;</strong> A Z Street night is for any crowd, costume or background &mdash; first-timers and the regulars who come back every year. More than 30 Poblacion bars and restaurants open up alongside Z, and every event runs on a Makati City&ndash;permitted safety plan with professional crowd management and on-site medical and fire response.</p>
-<h2>Five street parties a year</h2><ul class="cal">{cal}</ul>
+<h2>Every year on Z Street</h2><ul class="cal">{cal}</ul>
 <p>Staying at Z Hostel puts you right in the middle of it: the parties take over Don Pedro, Alfonso and Fermina Streets, right outside the door. <a href="{e(BOOK_URL)}">Book your bed early</a> &mdash; October is our busiest month every year.</p>
 <h2>The Z story, year by year</h2><ol class="timeline">{tl}</ol>
+<h2>The block: Z Hostel and the Vine Building</h2>
+<p><strong>Z Hostel</strong> is home base &mdash; the building that has been the arena every October since 2017. Downstairs, the lobby runs on world clocks (Amsterdam, Sydney, Manila, London, New York), a wall of stickers, weekly-events boards and Tagalog cheat sheets for whoever just landed. Upstairs, the Z Roofdeck looks straight out over the Makati skyline: a thatched-roof tiki bar, string lights, and a Philippine flag that catches the wind over every party.</p>
+<p>Right across the corner is the <strong>Vine Building</strong>, a PLUD property at 5663 Don Pedro cor. Alfonso St. &mdash; a six-floor former home where ivy took the stairwell and bougainvillea took the balconies, with a neon &ldquo;VINE BLDG.&rdquo; sign over the door. Eight small businesses share it today, including Green Door, Mahalo, Only Pans, La Hora Dorada, Don Poke, Reminder, Sulok and Pancit Habhab by Chef Punk. Together the two buildings and four streets &mdash; Kalayaan Avenue, Don Pedro, Alfonso and Fermina &mdash; make up the Z Street block.</p>
 <h2>Who's played Z Street</h2><p>{", ".join(ZS_ARTISTS)}, and many more local and international DJs.</p>
 <h2>Poblacion venues that join in</h2><p>{", ".join(ZS_VENUES)} and more.</p>
 <h2>In the news</h2><ul class="media">{media}</ul>
@@ -675,12 +679,12 @@ def build_zstreet():
 <p style="margin-top:28px"><a class="btn btn-dark" href="{e(BOOK_URL)}">Stay where it all started</a> <a class="text-link" href="/events-and-activities/">Daily events at Z &rarr;</a></p>
 </div></div></section>"""
     org = {"@context": "https://schema.org", "@type": "EventSeries", "name": "Z Street", "alternateName": ["Z Street Poblacion", "Poblacion Halloween Street Party"],
-           "description": "Recurring street parties in Poblacion, Makati, organized since 2017 by Z Hostel with Poblacion Land & Urban Development Corp. (PLUD): Summer Kick Off, Rev Up, Repoblacion, Halloween and a Christmas street party. 300,000+ attendees across 25 events.",
+           "description": "Recurring street parties in Poblacion, Makati, organized since 2017 by Z Hostel with Poblacion Land & Urban Development Corp. (PLUD): Summer Kick Off, Rev Up, Repoblacion and Halloween (2026: Tabi Tabi Po), plus Z Hostel's New Year's Eve party. 300,000+ attendees across 25+ events.",
            "startDate": "2017", "url": SITE + "/z-street/",
            "location": {"@type": "Place", "name": "Poblacion, Makati City", "address": {"@type": "PostalAddress", "streetAddress": "Don Pedro, Alfonso and Fermina Streets, Brgy. Poblacion", "addressLocality": "Makati City", "addressCountry": "PH"}},
            "organizer": {"@type": "Organization", "name": "Z Hostel (Flashpacker Inc.)", "url": SITE + "/"}}
     page("/z-street/", "Z Street \u2014 Poblacion's Street Parties Since 2017 | Z Hostel",
-         "Z Street: the Halloween, Rev Up, Repoblacion and Christmas street parties in Poblacion, Makati, started by Z Hostel in 2017. 300,000+ people across 25 parties.",
+         "Z Street: the Halloween, Rev Up, Repoblacion and Summer Kick Off street parties in Poblacion, Makati, started by Z Hostel with PLUD in 2017. 300,000+ people across 25+ parties.",
          body, plain=True, extra_ld=[org])
 
 
@@ -692,15 +696,15 @@ FAQ = [
      "Bars, restaurants, cafes and clubs are a short walk away, P. Burgos Street is walking distance, and Power Plant Mall (Rockwell) and Century City Mall are less than a kilometer away."),
     ("Why is Z Hostel called the original Poblacion hostel?",
      "Z Hostel opened on Don Pedro Street in 2015, before Poblacion became Manila's best-known nightlife district. It brought travelers from all over the world to what was then a quiet corner of Makati, "
-     "and in 2017 it started Z Street, the street parties that turned Poblacion into Makati's nightlife capital — more than 300,000 people across 25 parties since. Z is still the social center of Poblacion: the starting point of the daily walking tour and home of the Z Roofdeck."),
+     "and in 2017 it started Z Street, the street parties that turned Poblacion into Makati's nightlife capital — more than 300,000 people across 25+ parties since. Z is still the social center of Poblacion: the starting point of the daily walking tour and home of the Z Roofdeck."),
     ("What kind of rooms does Z Hostel have, and how much do they cost?",
      "Mixed dorms with 4, 6 or 8 beds (from ₱1,250 per bed per night), the all-female 6-bed &ldquo;Stiletto&rdquo; dorm (from ₱1,300), "
      "Social Fun Floor dorms and private rooms right below the roof deck, and private rooms for two with an en-suite bathroom (from ₱3,000 per room per night). "
      "Prices vary by date; you see the exact price for your dates on the <a href=\"/book/\">booking page</a>."),
     ("What is Z Street?",
      "Z Street is the series of street parties Z Hostel started in Poblacion in 2017, co-organized with Poblacion Land &amp; Urban Development Corp. (PLUD): "
-     "Summer Kick Off (March), Rev Up (May), Repoblacion (June), Halloween (October, up to 25,000 people) and a Christmas street party in December. "
-     "More than 300,000 people have joined 25 Z Street parties. <a href=\"/z-street/\">More about Z Street</a>."),
+     "Summer Kick Off (March), Rev Up (May), Repoblacion (June) and Halloween (October, up to 25,000 people; 2026's was Tabi Tabi Po), plus Z Hostel's own New Year's Eve party. "
+     "More than 300,000 people have joined 25+ Z Street parties. <a href=\"/z-street/\">More about Z Street</a>."),
     ("When is the Poblacion Halloween street party?",
      "Every year around October 30–31, Z Hostel's Halloween street party takes over Don Pedro, Alfonso and Fermina Streets in Poblacion, right outside the hostel. "
      "It's Manila's biggest Halloween street party and October is our busiest month, so book your bed early."),
@@ -710,7 +714,7 @@ FAQ = [
      "get the best rate with no booking-site fees, and your stay is confirmed as soon as your payment goes through."),
     ("What are the check-in and check-out times?", "Check-in is from 2:00 PM and check-out is until 12:00 noon. Arriving late or early? Let us know when you book and our front desk will help."),
     ("What is the Z Roofdeck?",
-     "The Z Roofdeck is Z Hostel's world-renowned rooftop bar with a view of the Manila skyline: cold beers, cocktails, food and a DJ deck that hosts local and international DJs and live artists. "
+     "The Z Roofdeck is Z Hostel's world-renowned rooftop bar looking straight out over the Makati skyline — a thatched-roof tiki bar under string lights and a Philippine flag: cold beers, cocktails, food and a DJ deck that hosts local and international DJs and live artists. "
      "Every day around 6 PM there's a Sunset Session where in-house guests get one free cocktail. On weekends it turns into a rooftop party."),
     ("Is Z Hostel a party hostel? Can I sleep?",
      "Z is a social hostel with a lively roof deck, but most rooms are quiet. If you want to be close to the action, pick the Social Fun Floor right below the roof deck "
@@ -767,8 +771,9 @@ def build_llms():
 
 ## Z Street (street parties, since 2017)
 - Started by Z Hostel in 2017, co-organized with Poblacion Land & Urban Development Corp. (PLUD); endorsed by the Makati Tourism Office (2023).
-- Five a year: Summer Kick Off (March), Rev Up (May), Repoblacion (June, Independence Day), Halloween (Oct 30-31, up to 25,000 people), Christmas street party / Holiday Bazaar (December).
-- 25 parties and 300,000+ attendees since 2017; 30+ Poblacion venues join in; artists include Rivermaya, Mayonnaise and Ebe Dancel.
+- Every year: Summer Kick Off (March), Rev Up (May), Repoblacion (June, Independence Day), Halloween (late October, up to 25,000 people; Halloween 2026 was "Tabi Tabi Po"), plus Z Hostel's own New Year's Eve party.
+- 25+ parties and 300,000+ attendees since 2017; 30+ Poblacion venues join in; artists include Rivermaya, Mayonnaise, Ebe Dancel and Juan Karlos Labajo.
+- The Z Street block: Z Hostel (5660 Don Pedro St.) and PLUD's Vine Building (5663 Don Pedro cor. Alfonso St., eight tenants incl. Green Door, Only Pans, Mahalo), across Kalayaan Ave., Don Pedro, Alfonso and Fermina Streets.
 - Often described as Manila's biggest Halloween street party (Manila Bulletin, When In Manila, ABS-CBN, Tripzilla, GMA).
 - More: {SITE}/z-street/
 
