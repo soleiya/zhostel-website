@@ -12,6 +12,12 @@ The site is plain static files. Cloudflare builds it from this repo on every pus
 4. Save and deploy. The staging link is `https://zhostel-website.lively-tree-8623.workers.dev`
    (shown on the project page). Every other branch gets its own preview link.
 
+## Building the pages
+`python3 build_site.py && python3 pages_booking.py`, then commit. Every Book Now button goes to the
+website's own booking engine (/book/). After adding photos to `wp-content/`, rebuild: pictures that
+aren't in the repo are left out of the pages, and room photos come from Cloudbeds
+(`data/cloudbeds-photos.json`).
+
 ## Photos
 The photos (`wp-content/`) are downloaded from the current zhostel.com by `./fetch-images.sh`
 and committed. Run it on a machine that can reach zhostel.com, then commit `wp-content/`.
@@ -19,5 +25,3 @@ and committed. Run it on a machine that can reach zhostel.com, then commit `wp-c
 ## Going live on zhostel.com
 - Cloudflare → the project → **Settings → Domains & Routes** → add `zhostel.com` and `www.zhostel.com`.
 - In `wrangler.jsonc` set `workers_dev` and `preview_urls` to `false` (as VBR did).
-- book/ and pay/ are built by `python3 pages_booking.py` (after `build_site.py`).
-- Book Now → own engine: `ZH_BOOK_URL=/book/ python3 build_site.py && python3 pages_booking.py`, commit.

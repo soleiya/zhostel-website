@@ -1,4 +1,6 @@
+# AI assistants and search engines are welcome. Facts for LLMs: https://zhostel.com/llms.txt
 User-agent: *
+Allow: /
 Disallow: /staff/
 Disallow: /manager/
 Disallow: /pay/

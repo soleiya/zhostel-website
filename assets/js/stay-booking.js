@@ -247,6 +247,14 @@
   }
 
   var availSeq = 0;
+  // ZH: a room type picked on the home page → enough beds / rooms for the whole party
+  // (dorm beds sleep 1, private rooms 2), as many as are free.
+  function preCount(t) {
+    var free = freeUnitsOfType(t);
+    var occ = (free[0] && Number(free[0].base_occupancy)) || 1;
+    return Math.max(1, Math.min(free.length, Math.ceil(partySize() / occ)));
+  }
+
   function loadAvailability() {
     if (!sb || !datesReady()) { heldIds = new Set(); renderTypes(); renderCapacity(); requestQuote(); return Promise.resolve(); }
     var seq = ++availSeq;
@@ -257,7 +265,7 @@
         " from " + fmtDay(checkInEl.value) + " \u2014 our team will check availability for you.";
       Object.keys(counts).forEach(function (t) { counts[t] = Math.min(counts[t], freeUnitsOfType(t).length); });
       var preR = params.get("room") || params.get("casita");
-      if (preR && counts[preR] === 0 && pickedVillas().length === 0 && freeUnitsOfType(preR).length) counts[preR] = 1;
+      if (preR && counts[preR] === 0 && pickedVillas().length === 0 && freeUnitsOfType(preR).length) counts[preR] = preCount(preR);
       renderTypes();
       renderCapacity();
       requestQuote();
@@ -281,7 +289,7 @@
         // keep the guest's picks where still possible
         Object.keys(counts).forEach(function (t) { counts[t] = Math.min(counts[t], freeUnitsOfType(t).length); });
         var pre = params.get("room") || params.get("casita");
-        if (pre && counts[pre] === 0 && pickedVillas().length === 0 && freeUnitsOfType(pre).length) counts[pre] = 1;
+        if (pre && counts[pre] === 0 && pickedVillas().length === 0 && freeUnitsOfType(pre).length) counts[pre] = preCount(pre);
         renderTypes();
         renderCapacity();
         requestQuote();

@@ -21,7 +21,7 @@ Run:  python3 pages_booking.py
 """
 import os
 
-from build_site import page, e, v, PHONE, MOBILE, EMAIL, FB, ROOT
+from build_site import page, e, v, have, CBP, PHONE, MOBILE, EMAIL, FB, ROOT
 
 # room_type (villas.room_type) → (name, description, photo, published price, unit)
 ROOM_TYPES = [
@@ -113,9 +113,11 @@ def contact_band(heading, text):
 def build_book():
     cards = ""
     for slug, name, desc, img, price, unit in ROOM_TYPES:
+        img = img if have(img) else (CBP.get(slug) or [None])[0]
+        pic = f'<img src="{img}" alt="{name} at Z Hostel" loading="lazy">' if img else '<div class="vt-noimg" aria-hidden="true"></div>'
         cards += f"""
       <div class="villa-type" data-type="{slug}">
-        <img src="{img}" alt="{name}" loading="lazy">
+        {pic}
         <div>
           <h3>{name}</h3>
           <div class="vt-meta">{desc} &middot; <span class="vt-occ"></span></div>

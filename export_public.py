@@ -16,7 +16,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(ROOT, "public")
 
 SKIP_DIRS = {"public", "supabase", "data", "node_modules", "__pycache__"}
-SITE_FILES = ["index.html", "404.html", "robots.txt", "sitemap.xml", "_headers", "_redirects", "favicon.ico"]
+SITE_FILES = ["index.html", "404.html", "robots.txt", "llms.txt", "sitemap.xml", "_headers", "_redirects", "favicon.ico"]
 SKIP_EXT = {".py", ".pyc", ".sql", ".md", ".gs", ".ts", ".map", ".sh", ".txt", ".jsonc"}
 
 if os.path.isdir(OUT):

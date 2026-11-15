@@ -15,6 +15,12 @@
    cloudbeds-sync (`functions/cloudbeds-sync`) is deployed and syncing property 6309; its "setup"
    run loaded 106 units into `villas` (10 room types: dorm beds sleep 1, private rooms 2).
 
+4. **`zh-003-cloudbeds-no-phone.sql`** — Cloudbeds reservations without a guest phone/e-mail (most
+   OTA bookings) failed to import; fixed 15 Nov 2026 and re-imported (584 Cloudbeds reservations).
+5. **`functions/cloudbeds-photos`** — copies Cloudbeds room-type photos into `cb_sync_state.photos`
+   (run: `select net.http_post(url := 'https://vsfuliexdlhgdlvlhqzy.supabase.co/functions/v1/cloudbeds-photos',
+   headers := jsonb_build_object('Content-Type','application/json','x-webhook-secret', cb_webhook_secret()), body := '{}'::jsonb);`).
+
 ## Still to do before going live
 - Edge Functions: send-booking-email, xendit-pay, campaigns, sync-alerts,
   send-contact-email — rebranded for Z Hostel — plus their secrets (entered by the owner
