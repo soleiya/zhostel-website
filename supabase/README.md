@@ -23,5 +23,6 @@
   and the vault secret `booking_email_webhook_secret`.
 - Website pages: book/, pay/, staff/, manager/ (ported from VBR, hostel wording).
 - Staging site: website bookings are accepted only from `booking_settings.allowed_origins`
-  (zhostel.com). Add the Cloudflare staging address there to test bookings on staging.
+  (now zhostel.com, www.zhostel.com and https://zhostel-website.lively-tree-8623.workers.dev —
+  remove the workers.dev address at go-live).
 - Cloudbeds stays in test mode until `select cb_go_live();`.
