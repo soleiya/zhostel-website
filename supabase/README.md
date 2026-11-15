@@ -11,13 +11,17 @@
    57 triggers, 6 cron jobs, and all 163 functions byte-identical (after the swap).
    The load log is in the `_replay.q` table.
 2. **`zh-001-hostel.sql`** — the Z Hostel changes on top (this folder).
+3. **`zh-002-cloudbeds-rooms.sql`** — `cb_set_rooms()`: Z Hostel's units come from Cloudbeds.
+   cloudbeds-sync (`functions/cloudbeds-sync`) is deployed and syncing property 6309; its "setup"
+   run loaded 106 units into `villas` (10 room types: dorm beds sleep 1, private rooms 2).
 
 ## Still to do before going live
-- Rooms/beds: load Z Hostel's Cloudbeds rooms (cloudbeds-sync) into `villas`.
-- Edge Functions: send-booking-email, cloudbeds-sync, xendit-pay, campaigns, sync-alerts,
+- Edge Functions: send-booking-email, xendit-pay, campaigns, sync-alerts,
   send-contact-email — rebranded for Z Hostel — plus their secrets (entered by the owner
   in Supabase → Edge Functions → Secrets): SMTP_PASSWORD, CLOUDBEDS_API_KEY,
   CLOUDBEDS_PROPERTY_ID, XENDIT_SECRET_KEY, XENDIT_CALLBACK_TOKEN, ANTHROPIC_API_KEY,
   and the vault secret `booking_email_webhook_secret`.
 - Website pages: book/, pay/, staff/, manager/ (ported from VBR, hostel wording).
+- Staging site: website bookings are accepted only from `booking_settings.allowed_origins`
+  (zhostel.com). Add the Cloudflare staging address there to test bookings on staging.
 - Cloudbeds stays in test mode until `select cb_go_live();`.
