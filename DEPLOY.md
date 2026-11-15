@@ -19,4 +19,5 @@ and committed. Run it on a machine that can reach zhostel.com, then commit `wp-c
 ## Going live on zhostel.com
 - Cloudflare → the project → **Settings → Domains & Routes** → add `zhostel.com` and `www.zhostel.com`.
 - In `wrangler.jsonc` set `workers_dev` and `preview_urls` to `false` (as VBR did).
-- Book Now → own engine: `ZH_BOOK_URL=/book/ python3 build_site.py`, commit.
+- book/ and pay/ are built by `python3 pages_booking.py` (after `build_site.py`).
+- Book Now → own engine: `ZH_BOOK_URL=/book/ python3 build_site.py && python3 pages_booking.py`, commit.

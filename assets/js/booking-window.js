@@ -1,0 +1,191 @@
+/* Booking window (booking-v28, from the VBR engine): guests can book up to booking_settings
+   .bookings_open_until — set by staff in the dashboard (Booking Window).
+   Every guest-facing date box marked data-booking-date="checkin" | "checkout"
+   | "visit" gets a max date, and a later date is cleared with a short note
+   (before the page's own change handlers run). The database enforces the
+   same limit on every website booking.
+   v51: room dates (checkin / checkout) past the room window are NOT
+   cleared — book-stay/ turns them into a booking REQUEST (subject to review,
+   2026 rates as a guide). Day-trip dates keep the hard limit.
+   v63: inside the room window, nights closed in Cloudbeds on/after
+   booking_settings.cloudbeds_rates_from (e.g. 2027 weekends) can still be
+   sent as a booking request (W.requestFrom; see stay-calendar.js status()).
+   A subtle early-bird line is shown once online booking reaches 2027. */
+(function () {
+  "use strict";
+  var FALLBACK = "2026-12-31"; // used until the live setting loads (or if it can't)
+  var cfg = window.SUPABASE_CONFIG || {};
+  var W = (window.ZHBookingWindow = { until: FALLBACK, stayUntil: null, requestUntil: null, requestFrom: null });
+  // v36: rooms (data-booking-date checkin/checkout) can have their own, later
+  // window (booking_settings.villa_bookings_open_until); day trips use until.
+  function untilFor(kind) { return (kind === "checkin" || kind === "checkout") && W.stayUntil ? W.stayUntil : W.until; }
+
+  function manilaToday() { return new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10); }
+  function addDays(s, n) { var d = new Date(s + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
+  function fmt(s) {
+    return new Date(s + "T00:00:00Z").toLocaleDateString("en-PH", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
+  }
+  W.message = function (kind) {
+    if (isStayKind(kind)) return "We're taking booking requests for stays up to " + fmt(W.requestLimit()) + " for now — please pick earlier dates.";
+    return "We're taking bookings up to " + fmt(untilFor(kind)) + " for now — later dates open soon.";
+  };
+  W.limitFor = function (kind) { var u = untilFor(kind); return u ? (kind === "checkout" ? addDays(u, 1) : u) : null; };
+  W.tooLate = function (value, kind) { var l = W.limitFor(kind || "visit"); return !!(l && value && value > l); };
+  // v51: last night guests can book online for rooms (null = no limit)
+  W.stayLimit = function () { return untilFor("checkin"); };
+  W.stayLimitText = function () { var u = untilFor("checkin"); return u ? fmt(u) : ""; };
+  // v51: a stay whose last night is past the room window → booking request
+  W.isRequest = function (checkIn, checkOut) {
+    var u = untilFor("checkin");
+    return !!(u && checkIn && checkOut && checkOut > checkIn && addDays(checkOut, -1) > u);
+  };
+  function isStayKind(kind) { return kind === "checkin" || kind === "checkout"; }
+  function farLimit() { return addDays(manilaToday(), 550); } // same 18-month cap as the database
+  // v53: last night a booking REQUEST can be sent for (booking_settings.requests_open_until)
+  W.requestLimit = function () { var f = farLimit(); return W.requestUntil && W.requestUntil < f ? W.requestUntil : f; };
+  W.requestLimitText = function () { return fmt(W.requestLimit()); };
+  function stayMax(kind) { var r = W.requestLimit(); return kind === "checkout" ? addDays(r, 1) : r; }
+
+  function inputs() { return Array.prototype.slice.call(document.querySelectorAll("input[data-booking-date]")); }
+  function noteFor(el, show) {
+    var qbErr = el.closest("form") && el.closest("form").querySelector(".qb-error");
+    if (qbErr) { // home page booking box has its own message line
+      if (show) { qbErr.textContent = W.message(el.getAttribute("data-booking-date")); qbErr.hidden = false; }
+      return;
+    }
+    var host = el.closest(".qb-field, div") || el.parentNode;
+    var n = host.nextElementSibling && host.nextElementSibling.classList && host.nextElementSibling.classList.contains("bw-note") ? host.nextElementSibling : null;
+    if (!show) { if (n) n.remove(); return; }
+    if (!n) {
+      n = document.createElement("p");
+      n.className = "bw-note";
+      n.setAttribute("role", "status");
+      host.parentNode.insertBefore(n, host.nextSibling);
+    }
+    n.textContent = W.message(el.getAttribute("data-booking-date"));
+  }
+  // returns true if the value was cleared
+  function check(el) {
+    if (!el.value) return false; // keep any note until a good date is picked
+    var sk = el.getAttribute("data-booking-date");
+    if (isStayKind(sk)) { // v51: later stays → request; v53: but not past the request window
+      var tooFar = el.value > stayMax(sk);
+      if (tooFar) el.value = "";
+      noteFor(el, tooFar);
+      return tooFar;
+    }
+    var bad = W.tooLate(el.value, el.getAttribute("data-booking-date"));
+    if (bad) el.value = "";
+    noteFor(el, bad);
+    return bad;
+  }
+  function applyMax() {
+    inputs().forEach(function (el) {
+      var kind = el.getAttribute("data-booking-date");
+      var lim = isStayKind(kind) ? stayMax(kind) : W.limitFor(kind); // v51/v53: rooms can be requested up to the request window
+      if (lim) el.max = lim; else el.removeAttribute("max");
+    });
+  }
+
+  // capture phase: runs before the page's own "change" listeners
+  document.addEventListener("change", function (e) {
+    var el = e.target;
+    if (el && el.matches && el.matches("input[data-booking-date]")) check(el);
+  }, true);
+
+  // values filled in from the link (?in=…) after the page loads
+  function recheckPrefilled() {
+    inputs().forEach(function (el) {
+      if (el.value && check(el)) el.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+  }
+
+  // One quiet line under the dates of every booking form.
+  //   Rooms (v51): how far online booking goes, and that later stays are a
+  //   booking request at rates subject to change — shown while the room
+  //   window is in the future.
+  //   Day trips: the upcoming rate increase, until RATE_NOTE_UNTIL (Manila date).
+  var RATE_NOTE_UNTIL = ""; // Z Hostel: no day-trip rate note
+  var RATE_NOTE = "";
+  // v63: early-bird line (message only; nothing changes in the price)
+  var EARLY_BIRD_FROM = "2027-01-01"; // shown once online booking reaches this night
+  var EARLY_BIRD = ""; // Z Hostel: no early-bird line
+  W.earlyBird = function () { var u = untilFor("checkin"); return u && u >= EARLY_BIRD_FROM && manilaToday() <= u ? EARLY_BIRD : ""; };
+  function stayNote() {
+    var u = untilFor("checkin");
+    if (!u || manilaToday() > u) return "";
+    return "Online booking is open for stays through " + fmt(u) + ". For other dates up to " + fmt(W.requestLimit()) + ", you can send us a booking request." +
+      (W.earlyBird() ? " " + W.earlyBird() : "");
+  }
+  function noteText(kind) {
+    if (isStayKind(kind)) return stayNote();
+    return !RATE_NOTE_UNTIL || manilaToday() > RATE_NOTE_UNTIL ? "" : RATE_NOTE;
+  }
+  // the home page box switches between Overnight stay and Day trip
+  function currentKind(form, el) {
+    var on = form.querySelector(".qb-tab.is-on");
+    if (on && on.getAttribute("data-mode")) return on.getAttribute("data-mode") === "day" ? "visit" : "checkin";
+    return el.getAttribute("data-booking-date");
+  }
+  function refreshRateNote() {
+    var n = document.querySelector(".bw-rate");
+    if (!n) return;
+    var form = n.closest("form"), el = inputs()[0];
+    var txt = form && el ? noteText(currentKind(form, el)) : "";
+    n.textContent = txt;
+    n.hidden = !txt;
+  }
+  W.refreshRateNote = refreshRateNote;
+  function addRateNotes() {
+    if (!document.getElementById("bwRateCss")) {
+      var css = document.createElement("style");
+      css.id = "bwRateCss";
+      css.textContent = ".bw-rate{display:flex;gap:8px;align-items:baseline;margin:10px 0 0;font-size:.86rem;line-height:1.45;color:var(--muted,#8a8a8a)}" +
+        ".bw-rate::before{content:\"\";flex:none;width:7px;height:7px;border-radius:50%;background:var(--yellow,#ffc425);transform:translateY(-1px)}" +
+        ".quickbook .bw-rate{margin:12px 0 0}.bw-rate[hidden]{display:none}";
+      document.head.appendChild(css);
+    }
+    // once per page: on the first booking form (the hero box where there is one)
+    var el = inputs()[0];
+    if (!el || document.querySelector(".bw-rate")) return;
+    (function () {
+      var form = el.closest("form");
+      if (!form) return;
+      var n = document.createElement("p");
+      n.className = "bw-rate";
+      n.textContent = noteText(currentKind(form, el));
+      n.hidden = !n.textContent;
+      Array.prototype.forEach.call(form.querySelectorAll(".qb-tab"), function (b) {
+        b.addEventListener("click", function () { setTimeout(refreshRateNote, 0); });
+      });
+      var err = form.querySelector(".qb-error");
+      if (err) { err.parentNode.insertBefore(n, err); return; } // home + day-trip quick-book boxes
+      var host = el.closest("div") || el.parentNode;
+      if (host.parentNode && host.parentNode.classList && host.parentNode.classList.contains("row-2")) host = host.parentNode; // check-in + check-out side by side
+      host.parentNode.insertBefore(n, host.nextSibling);
+    })();
+  }
+
+  applyMax();
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", function () { applyMax(); addRateNotes(); setTimeout(recheckPrefilled, 0); });
+  else { addRateNotes(); setTimeout(recheckPrefilled, 0); }
+
+  if (cfg.url && cfg.anonKey) {
+    fetch(cfg.url + "/rest/v1/booking_settings?select=*&id=eq.1", {
+      headers: { apikey: cfg.anonKey, Authorization: "Bearer " + cfg.anonKey },
+    })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (rows) {
+        if (!rows || !rows.length) return; // table not set up yet: keep the fallback
+        W.until = rows[0].bookings_open_until || null;
+        W.stayUntil = rows[0].villa_bookings_open_until || null;
+        W.requestUntil = rows[0].requests_open_until || null;
+        W.requestFrom = rows[0].cloudbeds_rates ? rows[0].cloudbeds_rates_from || null : null; // v63
+        applyMax();
+        refreshRateNote();
+        recheckPrefilled();
+        document.dispatchEvent(new CustomEvent("zh:booking-window"));
+      })
+      .catch(function () {});
+  }
+})();
