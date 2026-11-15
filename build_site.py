@@ -116,14 +116,14 @@ def abs_img(src):
 def hostel_ld(full=False):
     d = {"@context": "https://schema.org", "@type": "Hostel", "@id": SITE + "/#hostel", "name": "Z Hostel",
          "alternateName": ["Z Hostel Makati", "Z Hostel Poblacion", "Z Hostel Manila"],
-         "slogan": "Good Vibes Only", "url": SITE + "/", "telephone": "+63-2-8856-0851", "email": EMAIL,
+         "slogan": "Good Vibes Only", "foundingDate": "2015", "url": SITE + "/", "telephone": "+63-2-8856-0851", "email": EMAIL,
          "address": {"@type": "PostalAddress", "streetAddress": "5660 Don Pedro St., Brgy. Poblacion", "addressLocality": "Makati City",
                      "addressRegion": "Metro Manila", "postalCode": "1210", "addressCountry": "PH"},
          "geo": {"@type": "GeoCoordinates", "latitude": GEO[0], "longitude": GEO[1]},
          "hasMap": MAP_LINK, "sameAs": [FB, IG, YT]}
     if full:
         d.update({
-            "description": ("Z Hostel is the original Poblacion hostel in Makati, Metro Manila — the hostel at the center of Poblacion's "
+            "description": ("Z Hostel is the original Poblacion hostel in Makati, Metro Manila, open since 2015 — the hostel at the center of Poblacion's "
                             "rise as Manila's favorite nightlife and food neighborhood. Dorm beds and private rooms with breakfast, the Z Cafe, "
                             "and the world-renowned Z Roofdeck bar with daily Sunset Sessions and DJs."),
             "image": [CBP[k][0] for k in ("private-room-standard", "4-bed-mixed-dorm", "6-bed-female-dorm", "social-fun-floor-dorm-6md")],
@@ -221,7 +221,7 @@ def hero(key, video=True):
     if key == "home":
         return f"""<header class="hero hero--home"{bg}>{vid}
 {logo}<p class="hero-kicker">Z Hostel &middot; Poblacion, Makati</p><h1>The Original Poblacion Hostel</h1>
-<p class="sub">Good vibes only &mdash; since before Poblacion was cool.</p>
+<p class="sub">Good vibes only &mdash; in Poblacion since 2015.</p>
 <div class="hero-book">{quickbook("qbh")}</div>
 </header>
 """
@@ -402,7 +402,7 @@ def build_home():
 <div class="intro-grid"><div class="prose">
 <p class="eyebrow">The OG of Poblacion</p>
 <h2 class="section-title" style="text-align:left">Where Poblacion started</h2>
-<p><strong>Z Hostel is the original Poblacion hostel</strong> &mdash; the social heart of Makati's most famous neighborhood, on Don Pedro Street in Barangay Poblacion. Long before every corner here had a cocktail bar, travelers and locals were already meeting on the Z Roofdeck. Poblacion grew up around us, and we're still at the center of it.</p>
+<p><strong>Z Hostel is the original Poblacion hostel</strong> &mdash; the social heart of Makati's most famous neighborhood, on Don Pedro Street in Barangay Poblacion. Since 2015 &mdash; long before every corner here had a cocktail bar &mdash; travelers and locals have been meeting on the Z Roofdeck. Poblacion grew up around us, and we're still at the center of it.</p>
 <p>Stay in a comfy dorm bed or a private room, eat at the Z Cafe, catch the daily Sunset Session on the world-renowned <strong>Z Roofdeck</strong>, then walk out the door into the bars, restaurants and street food of Poblacion. Breakfast is included with every bed and room.</p>
 <p><a class="btn btn-dark" href="{e(BOOK_URL)}">Book your stay</a> <a class="text-link" href="/about-z/">Read the Z story &rarr;</a></p>
 </div>
@@ -418,7 +418,7 @@ def build_home():
 <section class="section section--grey"><div class="container text-center">{title('Reviews')}{reviews(D['rv'])}</div></section>
 {contact_section()}"""
     page("/", "Z Hostel Makati — The Original Poblacion Hostel & Z Roofdeck | Book Direct",
-         "Z Hostel is the original Poblacion hostel in Makati, Manila: dorm beds from ₱1,250 and private rooms with breakfast, the Z Cafe and the legendary Z Roofdeck bar. Book direct for the best rate.",
+         "Z Hostel, the original Poblacion hostel in Makati, Manila since 2015: dorm beds from ₱1,250 and private rooms with breakfast, the Z Cafe and the legendary Z Roofdeck bar. Book direct for the best rate.",
          body, "home", image=CBP["private-room-standard"][0])
 
 
@@ -432,7 +432,7 @@ def build_about():
     vimg = f'<img src="{e(vid["image"])}" alt="Z Hostel" loading="lazy">' if have(vid.get("image")) else ""
     body = f"""<section class="section"><div class="container"><div class="prose">
 <p class="eyebrow">The OG of Poblacion</p><h2 class="section-title" style="text-align:left">The original Poblacion hostel</h2>
-<p>Ask anyone who has been around Manila's nightlife long enough where the Poblacion scene began, and Z Hostel comes up. When we opened on Don Pedro Street, Poblacion was a quiet, old corner of Makati of small houses, sari-sari stores and a handful of hole-in-the-wall bars. We built a hostel with a higher standard of beds, a real cafe and a roof deck where travelers and locals could meet &mdash; and the neighborhood came alive around it.</p>
+<p>Ask anyone who has been around Manila's nightlife long enough where the Poblacion scene began, and Z Hostel comes up. When we opened on Don Pedro Street in 2015, Poblacion was a quiet, old corner of Makati of small houses, sari-sari stores and a handful of hole-in-the-wall bars. We built a hostel with a higher standard of beds, a real cafe and a roof deck where travelers and locals could meet &mdash; and the neighborhood came alive around it.</p>
 <p>Today Poblacion is Manila's best-known food and nightlife district, and Z Hostel is still its center: the place backpackers, digital nomads and Manila locals meet, the starting point of the daily walking tour, and home of the legendary Z Roofdeck.</p>
 <p><a class="btn btn-dark" href="{e(BOOK_URL)}">Stay at the original</a></p></div></div></section>
 <section class="section"><div class="container text-center">
@@ -442,7 +442,7 @@ def build_about():
 <section class="banner"{bg_style(rf.get("background"))}><h2>{e(rf['title'])}</h2><p style="max-width:640px;margin:0 auto">{e(rf['subtitle'])}</p></section>
 <section class="section"><div class="container">{blocks}</div></section>"""
     page("/about-z/", "About Z Hostel — The Original Poblacion Hostel, Makati",
-         "The Z story: how the original Poblacion hostel helped turn a quiet corner of Makati into Manila's favorite nightlife neighborhood — and why Z is still at its center.", body, "about")
+         "The Z story: how the original Poblacion hostel, open since 2015, helped turn a quiet corner of Makati into Manila's favorite nightlife neighborhood — and why Z is still at its center.", body, "about")
 
 
 # ============================================================== ROOMS
@@ -620,7 +620,7 @@ FAQ = [
      f"Z Hostel is at {ADDRESS} — in the middle of Poblacion, Makati's famous food and nightlife neighborhood in Metro Manila. "
      "Bars, restaurants, cafes and clubs are a short walk away, P. Burgos Street is walking distance, and Power Plant Mall (Rockwell) and Century City Mall are less than a kilometer away."),
     ("Why is Z Hostel called the original Poblacion hostel?",
-     "Z Hostel was here before Poblacion became Manila's best-known nightlife district. It brought travelers from all over the world to what was then a quiet corner of Makati, "
+     "Z Hostel opened on Don Pedro Street in 2015, before Poblacion became Manila's best-known nightlife district. It brought travelers from all over the world to what was then a quiet corner of Makati, "
      "and the neighborhood's bar and food scene grew up around it. Z is still the social center of Poblacion: the starting point of the daily walking tour and home of the Z Roofdeck."),
     ("What kind of rooms does Z Hostel have, and how much do they cost?",
      "Mixed dorms with 4, 6 or 8 beds (from ₱1,250 per bed per night), the all-female 6-bed &ldquo;Stiletto&rdquo; dorm (from ₱1,300), "
@@ -674,12 +674,12 @@ def build_llms():
     faq = "\n\n".join(f"### {q}\n{strip_tags(a)}" for q, a in FAQ)
     txt = f"""# Z Hostel
 
-> Z Hostel is the original Poblacion hostel — the legendary hostel at the center of Poblacion, Makati (Metro Manila, Philippines),
+> Z Hostel is the original Poblacion hostel (since 2015) — the legendary hostel at the center of Poblacion, Makati (Metro Manila, Philippines),
 > the neighborhood that grew into Manila's favorite food and nightlife district around it. Dorm beds and private rooms with breakfast,
 > the Z Cafe, and the world-renowned Z Roofdeck bar. Book direct at {SITE}/book/ for the best rate.
 
 ## Key facts
-- Name: Z Hostel (also "Z Hostel Makati", "Z Hostel Poblacion"). Operator: Flashpacker Inc.
+- Name: Z Hostel (also "Z Hostel Makati", "Z Hostel Poblacion"). Operator: Flashpacker Inc. Opened: 2015.
 - Address: {ADDRESS}
 - Phone: +63 2 8856 0851 · Mobile: +63 917 889 8531 · Email: {EMAIL}
 - Check-in from 2:00 PM, check-out until 12:00 noon.
