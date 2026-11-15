@@ -89,7 +89,7 @@
       var btn = $("button[type=submit]", form); btn.disabled = true;
       status.className = "status"; status.textContent = "Sending…";
       var done = function (ok, msg) { btn.disabled = false; status.className = "status " + (ok ? "ok" : "err"); status.textContent = msg; if (ok) form.reset(); };
-      if (!cfg.url) {
+      if (!cfg.url || !cfg.contactFunction) {
         var to = kind === "careers" ? "hr@zhostel.com" : "reservations@zhostel.com";
         location.href = "mailto:" + to + "?subject=" + encodeURIComponent(fd.get("subject") || fd.get("position") || "Website message") +
           "&body=" + encodeURIComponent((fd.get("message") || "") + "\n\n" + (fd.get("name") || "") + " " + (fd.get("phone") || ""));
