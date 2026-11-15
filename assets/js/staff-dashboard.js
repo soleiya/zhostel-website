@@ -1,0 +1,2954 @@
+(function () {
+  var cfg = window.SUPABASE_CONFIG || {};
+  if (!cfg.url || cfg.url.indexOf("YOUR-PROJECT-REF") !== -1) {
+    document.getElementById("loginScreen").innerHTML =
+      "<h2>Not connected yet</h2><p>This dashboard needs assets/js/booking-config.js filled in with your real Supabase project first — see SETUP-BOOKING.md.</p>";
+    return;
+  }
+
+  var sb = window.supabase.createClient(cfg.url, cfg.anonKey);
+
+  // Maps each staff member's dashboard login email to their display name,
+  // so a booking they add through this dashboard can be attributed to them
+  // by name (same idea as the old sheet's "Booker" column) instead of a
+  // raw email address. Falls back to the email's first part for anyone
+  // signing in with an address not in this list.
+  var STAFF_EMAIL_NAMES = {
+    "oriel@zhostel.com": "Oriel",
+    "chesca@zhostel.com": "Chesca",
+    "shan@zhostel.com": "Shan",
+    "reymer@zhostel.com": "Reymer",
+    "camile@zhostel.com": "Camile",
+    "jackie@zhostel.com": "Jackie",
+    "jhoms@zhostel.com": "Jhoms",
+    "carmela@zhostel.com": "Carmela",
+    "sugar@zhostel.com": "Sugar",
+    "harly@zhostel.com": "Harly",
+    "bea@zhostel.com": "Bea",
+    "aubrey@zhostel.com": "Aubrey",
+    "marison@zhostel.com": "Marison",
+    "sjc@zhostel.com": "SJC",
+    "rm@zhostel.com": "RM",
+    "gwen@zhostel.com": "Gwen",
+    "msnikka@zhostel.com": "Ms. Nikka",
+    "fo@staff.local": "FO",
+    "sugar@staff.local": "Sugar",
+    "mae@staff.local": "Mae (Accounting)",
+    "miguel@staff.local": "Miguel",
+    "nicho@staff.local": "Nicho",
+    "tristan@staff.local": "Tristan",
+    "fo@zhostel.com": "FO",
+  };
+  var currentStaffName = null;
+
+  var TYPE_LABELS = {
+    day_trip: "Day Trip",
+    half_day: "Half-Day Trip",
+    flash_sale: "Flash Sale",
+    all_inclusive_family: "All Inclusive (Family)",
+    all_inclusive_barkada: "All Inclusive (Barkada)",
+    corporate: "Corporate",
+    other: "Other / Add-on",
+    overnight: "Overnight Stay",
+  };
+  var SOURCE_LABELS = {
+    website: "Website", messenger: "Messenger", phone: "Phone", email: "Email", walk_in: "Walk-in", other: "Other",
+    sheet_import: "Imported (2026 Sheet)",
+    cloudbeds: "Cloudbeds booking engine", booking_com: "Booking.com", agoda: "Agoda", expo: "Expo", events: "Wedding / Events",
+    corporate: "Corporate", partner: "Partner / Referral", returnee: "Returning guest", staff_stay: "Employee / friend stay",
+  };
+  var STATUS_ORDER = ["pending", "pending_payment", "downpaid", "confirmed", "completed", "declined", "expired"];
+  // One vocabulary everywhere — dashboard, guest emails and Cloudbeds.
+  var STATUS_LABELS = {
+    pending: "Unpaid", pending_payment: "Proof uploaded · to check", downpaid: "Confirmed · Downpaid", confirmed: "Confirmed · Paid",
+    declined: "Cancelled", completed: "Completed", expired: "Cancelled · not paid",
+    inquiry: "Booking Request (inquiry)", // v51: website request for dates past the booking window — nothing held
+  };
+  // Rooms show exactly Cloudbeds' six statuses, in Cloudbeds' words. A
+  // payment waiting to be checked is still "Confirmation Pending" (as in
+  // Cloudbeds) — the Payment column shows it.
+  var VILLA_ORDER = ["inquiry", "pending", "confirmed", "checked_in", "checked_out", "canceled", "no_show"];
+  var VILLA_LABELS = { pending: "Confirmation Pending", confirmed: "Confirmed", checked_in: "In-House",
+    checked_out: "Checked Out", canceled: "Canceled", no_show: "No-Show",
+    inquiry: "Booking Request (inquiry)" }; // v51: not a reservation — review, then book or cancel
+  var CANCEL_REASONS = { guest_cancelled: "Guest cancelled", correction: "Correction", test: "Test", other: "Other" };
+  function villaStatusKey(r) {
+    var cbs = r.cb_info && r.cb_info.status;
+    switch (r.status) {
+      case "pending": case "pending_payment": return "pending";
+      case "confirmed": return cbs === "checked_in" ? "checked_in" : "confirmed";
+      case "completed": return "checked_out";
+      case "declined": return cbs === "no_show" ? "no_show" : "canceled";
+      case "expired": return "canceled";
+      default: return r.status;
+    }
+  }
+  function statusLabel(r) {
+    if (r && r.stay_type === "overnight") return VILLA_LABELS[villaStatusKey(r)] || r.status;
+    if (r && r.status === "pending") return pendingLabel(r);
+    if (r && r.status === "confirmed" && isDownpaid(r)) return STATUS_LABELS.downpaid;
+    return STATUS_LABELS[r.status] || r.status;
+  }
+  // day trips: confirmed with a down payment, balance still to pay
+  function isDownpaid(r) { return r.status === "confirmed" && Number(r.amount_paid) > 0 && r.total_amount != null && Number(r.amount_paid) < Number(r.total_amount) - 0.5; }
+  // day trips: who made it, then "Unpaid"
+  function pendingLabel(r) {
+    return originOf(r) === "site_guest" ? "Customer Booked · Unpaid" : originOf(r) === "site_staff" ? "Staff Booked · Unpaid" : "Booked · Unpaid";
+  }
+  // Bookings that no longer hold their cabana(s).
+  function releasesCabanas(status) { return status === "declined" || status === "expired"; }
+
+  // Same rule as booking_deadlines() in supabase-functions/booking-v7.sql:
+  // pay within 24h of booking or it expires, never past 8:00 AM on the trip
+  // date. Booked on/after 8:00 AM of the trip date = pay on arrival.
+  function paymentDeadlines(r) {
+    if (!r.created_at) return null;
+    var created = new Date(r.created_at).getTime();
+    var trip8 = r.check_in ? new Date(r.check_in + "T08:00:00+08:00").getTime() : null;
+    if (trip8 !== null && trip8 <= created) return null;
+    var fin = created + 24 * 3600e3;
+    if (trip8 !== null && trip8 < fin) fin = trip8;
+    return { final: fin };
+  }
+  // Actions the booking_audit_log trigger can record — see the SQL that
+  // created log_booking_change() / log_cabana_change() for exactly how
+  // and when each one is written.
+  var LOG_ACTION_LABELS = {
+    insert: "Booking created",
+    update: "Booking edited",
+    delete: "Booking deleted",
+    cabana_added: "Cabana added",
+    cabana_removed: "Cabana removed",
+    villa_added: "Room assigned",
+    villa_removed: "Room removed",
+    villa_changed: "Room changed",
+    villa_blocked: "Room blocked",
+    villa_unblocked: "Room block removed",
+    cabana_blocked: "Cabana blocked",
+    cabana_unblocked: "Cabana block removed",
+    cabana_block_changed: "Cabana block changed",
+  };
+
+  var loginScreen = document.getElementById("loginScreen");
+  var dashScreen = document.getElementById("dashScreen");
+  var logoutBtn = document.getElementById("logoutBtn");
+  var loginBtn = document.getElementById("loginBtn");
+  var loginError = document.getElementById("loginError");
+  var bookingsBody = document.getElementById("bookingsBody");
+  var countLine = document.getElementById("countLine");
+  var searchBox = document.getElementById("searchBox");
+  // Links in the staff alert emails open the dashboard pre-filtered: ?q=ZH-1042
+  var deepLinkQ = new URLSearchParams(location.search).get("q");
+  if (deepLinkQ && searchBox) searchBox.value = deepLinkQ;
+  var filterPills = document.getElementById("filterPills");
+  var summaryBar = document.getElementById("summaryBar");
+
+  var filterDateField = document.getElementById("filterDateField");
+  var filterDateFrom = document.getElementById("filterDateFrom");
+  var filterDateTo = document.getElementById("filterDateTo");
+  var filterStatus = document.getElementById("filterStatus");
+  var filterType = document.getElementById("filterType");
+  var filterBookedBy = document.getElementById("filterBookedBy");
+  var filterSource = document.getElementById("filterSource");
+  var filterOrigin = document.getElementById("filterOrigin");
+  var clearFiltersBtn = document.getElementById("clearFiltersBtn");
+
+  var allRows = [];
+  var activeFilter = "all";
+  // Two sections: Day Trips (day trip / half-day / packages / other) and
+  // Rooms (overnight stays). Remembered per browser.
+  // Z Hostel: rooms and beds only (no day trips / cabanas), so the dashboard always opens on the stays section.
+  var activeSection = "villas";
+  var filterLoadFrom = document.getElementById("filterLoadFrom");
+  var THIS_YEAR = Number(new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Manila" }).slice(0, 4));
+  function isVillaRow(r) { return r.stay_type === "overnight"; }
+
+  // ---------- Cloudbeds (master for villas; see booking-v14-cloudbeds-sync.sql) ----------
+  // Cloudbeds' reservation pages use an internal id its API doesn't expose, so
+  // links open the Reservations list and copy the reservation number to paste
+  // into Cloudbeds' search box.
+  var CB_RES_URL = "https://hotels.cloudbeds.com/connect/208402#/reservations";
+  var CB_STATUS = { not_confirmed: "Confirmation Pending", confirmed: "Confirmed", checked_in: "In-House", checked_out: "Checked Out",
+    canceled: "Canceled", no_show: "No-Show", deleted: "Deleted", in_progress: "In progress" };
+  // Where the booking was made (booking-v18): the website's guest booking page,
+  // the staff dashboard, Cloudbeds (incl. OTAs) or the 2026 Day Trip sheet.
+  var ORIGIN_LABELS = { site_guest: "Website · Guest", site_staff: "Website · Staff", cloudbeds: "Cloudbeds", sheet: "Day Trip sheet" };
+  function originOf(r) {
+    return r.booking_origin || (r.cb_owned ? "cloudbeds" : r.source === "sheet_import" ? "sheet" : r.booked_by ? "site_staff" : "site_guest");
+  }
+  function originBadge(r) {
+    var o = originOf(r);
+    return '<span class="origin-badge origin-' + o + '" title="Where this booking was made">' + esc(ORIGIN_LABELS[o] || o) + "</span>";
+  }
+  function cbUrl(r) { return r && r.cb_reservation_id ? CB_RES_URL : null; }
+  function cbLinkHtml(r) {
+    return r.cb_reservation_id ? '<a class="cb-link" data-cb="' + esc(r.cb_reservation_id) + '" href="' + CB_RES_URL + '" target="_blank" rel="noopener" title="Copies the number and opens Cloudbeds — paste it into Cloudbeds\' search">Cloudbeds #' + esc(r.cb_reservation_id) + " ↗</a>" : "";
+  }
+  // any .cb-link with data-cb: copy the reservation number on the way to Cloudbeds
+  document.addEventListener("click", function (e) {
+    var a = e.target.closest && e.target.closest("a[data-cb]");
+    if (!a) return;
+    var n = a.getAttribute("data-cb");
+    try { navigator.clipboard.writeText(n); } catch (err) {}
+    var tip = document.createElement("span");
+    tip.className = "cb-copied";
+    tip.textContent = "#" + n + " copied — paste in Cloudbeds search";
+    a.insertAdjacentElement("afterend", tip);
+    setTimeout(function () { tip.remove(); }, 4000);
+  }, true);
+  // a website villa booking that hasn't reached Cloudbeds yet
+  function cbWaiting(r) {
+    return isVillaRow(r) && !r.cb_owned && !r.cb_reservation_id && ["declined", "expired", "completed"].indexOf(r.status) === -1 &&
+      (r.booking_villas || []).length > 0 && (!r.check_out || r.check_out >= new Date().toISOString().slice(0, 10));
+  }
+  var cbPushOn = null; // false = test mode (website bookings aren't sent to Cloudbeds)
+  function cbClashes(r) { return r.cb_info && Array.isArray(r.cb_info.clashes) ? r.cb_info.clashes : []; }
+  // Default view: today's bookings first, then upcoming dates (soonest first),
+  // then past dates (most recent first). Click "Preferred Date" to cycle
+  // through Today-first → oldest-first → newest-first.
+  var sortField = "today_first";
+  var sortDir = "asc";
+  var cabanasById = {};
+  var cabanasList = [];
+
+  // v29: day-trip cabanas are booked by count (dining / lounge); the numbers
+  // (booking_cabanas) are assigned by staff whenever they're ready.
+  var cabanaStock = { dining: 43, lounge: 6 };
+  function loadCabanaOptions() {
+    sb.from("booking_settings").select("dining_cabanas_per_day, lounge_cabanas_per_day").eq("id", 1).maybeSingle().then(function (res) {
+      if (!res.error && res.data) cabanaStock = { dining: res.data.dining_cabanas_per_day, lounge: res.data.lounge_cabanas_per_day };
+    }, function () {});
+    var q = window.VBRCabanaMap ? window.VBRCabanaMap.loadCabanas(sb)
+      : sb.from("cabanas").select("*").order("section").order("row_index").order("col_index").then(function (res) { if (res.error) throw res.error; return res.data || []; });
+    return q.then(function (cabanas) {
+      cabanasById = {};
+      cabanasList = cabanas;
+      cabanas.forEach(function (c) { cabanasById[c.id] = c; });
+      return cabanas;
+    }, function () { return []; });
+  }
+  function cabKind(c) { return String((c && c.cabana_type) || "").indexOf("lounge") === 0 ? "lounge" : "dining"; }
+  function cabShort(c) { return c ? c.section + "-" + c.number : "?"; }
+  // how many dining / lounge cabanas a day trip has
+  function countsOf(r) {
+    var a = { dining: 0, lounge: 0 };
+    (r.booking_cabanas || []).forEach(function (bc) { var c = cabanasById[bc.cabana_id]; if (c) a[cabKind(c)]++; });
+    return {
+      dining: Math.max(Number(r.dining_cabanas) || 0, Number(r.legacy_dining_cabanas) || 0, a.dining),
+      lounge: Math.max(Number(r.lounge_cabanas) || 0, Number(r.legacy_lounge_cabanas) || 0, a.lounge),
+    };
+  }
+  // cabanas still free on a day: stock − blocked − booked (counts)
+  function cabanasFreeOn(dateStr, excludeId) {
+    var used = { dining: 0, lounge: 0 }, blocked = { dining: 0, lounge: 0 };
+    if (!dateStr) return null;
+    allRows.forEach(function (r) {
+      if (r.check_in !== dateStr || isVillaRow(r) || releasesCabanas(r.status) || (excludeId && r.id === excludeId)) return;
+      var n = countsOf(r); used.dining += n.dining; used.lounge += n.lounge;
+    });
+    blocksForDate(dateStr).set.forEach(function (id) { var c = cabanasById[id]; if (c) blocked[cabKind(c)]++; });
+    return {
+      dining: cabanaStock.dining - blocked.dining - used.dining, lounge: cabanaStock.lounge - blocked.lounge - used.lounge,
+      used: used, blocked: blocked, stock: cabanaStock,
+    };
+  }
+
+  // ---------- cabana blocks (booking-v20-cabana-blocks.sql) ----------
+  // Staff can take a cabana off sale for a date range: under repair,
+  // unavailable or blocked. The public map greys them out; the database
+  // refuses to put a booking on a blocked cabana-day.
+  var BLOCK_REASONS = { under_repair: "Under repair", unavailable: "Unavailable", blocked: "Blocked" };
+  var cabanaBlocks = [];
+  function loadCabanaBlocks() {
+    return sb.from("cabana_blocks").select("*").order("start_date", { ascending: true }).then(function (res) {
+      // Before booking-v20 is run the table doesn't exist: carry on without blocks.
+      cabanaBlocks = res.error ? [] : (res.data || []);
+      return cabanaBlocks;
+    }, function () { cabanaBlocks = []; return cabanaBlocks; });
+  }
+  function blockDates(b) {
+    return b.start_date === b.end_date ? fmtDate(b.start_date) : fmtDate(b.start_date) + " → " + fmtDate(b.end_date);
+  }
+  function blockText(b) {
+    return (BLOCK_REASONS[b.reason] || "Blocked") + (b.note ? ": " + b.note : "") + " (" + blockDates(b) + ")";
+  }
+  function blocksForDate(dateStr) {
+    var set = new Set(), info = {}, byCabana = {};
+    if (!dateStr) return { set: set, info: info, byCabana: byCabana };
+    cabanaBlocks.forEach(function (b) {
+      if (dateStr < b.start_date || dateStr > b.end_date) return;
+      set.add(b.cabana_id);
+      byCabana[b.cabana_id] = b;
+      info[b.cabana_id] = blockText(b);
+    });
+    return { set: set, info: info, byCabana: byCabana };
+  }
+
+  function showDash() {
+    loginScreen.style.display = "none";
+    dashScreen.style.display = "block";
+    logoutBtn.style.display = "inline-block";
+    populateStaticFilterOptions();
+    // Wait until every dashboard script (villas, email panel) has run.
+    var go = function () {
+      Promise.all([loadCabanaOptions(), loadCabanaBlocks(), window.VBRVillas ? window.VBRVillas.init().catch(function () {}) : null]).then(loadBookings);
+    };
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", go); else go();
+  }
+  function showLogin() {
+    loginScreen.style.display = "block";
+    dashScreen.style.display = "none";
+    logoutBtn.style.display = "none";
+  }
+
+  function staffNameForEmail(email) {
+    if (!email) return null;
+    var lower = email.trim().toLowerCase();
+    if (STAFF_EMAIL_NAMES[lower]) return STAFF_EMAIL_NAMES[lower];
+    var local = lower.split("@")[0];
+    return local.charAt(0).toUpperCase() + local.slice(1);
+  }
+
+  sb.auth.getSession().then(function (res) {
+    if (res.data.session) {
+      currentStaffName = staffNameForEmail(res.data.session.user && res.data.session.user.email);
+      showDash();
+    } else {
+      showLogin();
+    }
+  });
+
+  loginBtn.addEventListener("click", function () {
+    var email = document.getElementById("loginEmail").value.trim();
+    var password = document.getElementById("loginPassword").value;
+    loginError.style.display = "none";
+    loginBtn.disabled = true;
+    loginBtn.textContent = "Signing in…";
+    sb.auth.signInWithPassword({ email: email, password: password }).then(function (res) {
+      loginBtn.disabled = false;
+      loginBtn.textContent = "Sign In";
+      if (res.error) {
+        loginError.textContent = "Couldn't sign in — check the email and password.";
+        loginError.style.display = "block";
+        return;
+      }
+      currentStaffName = staffNameForEmail(email);
+      showDash();
+    });
+  });
+
+  logoutBtn.addEventListener("click", function () {
+    sb.auth.signOut().then(function () {
+      currentStaffName = null;
+      showLogin();
+    });
+  });
+
+  // ---------- static filter dropdown options (status / type / source) ----------
+  function populateStaticFilterOptions() {
+    if (filterLoadFrom && !filterLoadFrom.options.length) {
+      var opts = [[String(THIS_YEAR), THIS_YEAR + " onwards"]];
+      for (var y = THIS_YEAR - 1; y >= 2021; y--) opts.push([String(y), "From " + y]);
+      opts.push(["all", "All years"]);
+      filterLoadFrom.innerHTML = opts.map(function (o) { return '<option value="' + o[0] + '">' + o[1] + "</option>"; }).join("");
+      filterLoadFrom.addEventListener("change", loadBookings);
+    }
+    STATUS_ORDER.forEach(function (s) {
+      var opt = document.createElement("option");
+      opt.value = s;
+      opt.textContent = STATUS_LABELS[s];
+      filterStatus.appendChild(opt);
+    });
+    Object.keys(TYPE_LABELS).forEach(function (t) {
+      var opt = document.createElement("option");
+      opt.value = t;
+      opt.textContent = TYPE_LABELS[t];
+      filterType.appendChild(opt);
+    });
+    Object.keys(SOURCE_LABELS).forEach(function (s) {
+      var opt = document.createElement("option");
+      opt.value = s;
+      opt.textContent = SOURCE_LABELS[s];
+      filterSource.appendChild(opt);
+    });
+    // "Booked by" is free text entered by staff over time, so its option
+    // list is filled in from whatever names actually appear in the data —
+    // see populateBookedByOptions(), called once bookings are loaded.
+  }
+
+  function populateBookedByOptions() {
+    var names = {};
+    allRows.forEach(function (r) { if (r.booked_by) names[r.booked_by] = true; });
+    var sorted = Object.keys(names).sort(function (a, b) { return a.localeCompare(b); });
+    var current = filterBookedBy.value;
+    filterBookedBy.innerHTML = '<option value="">Anyone</option>';
+    sorted.forEach(function (n) {
+      var opt = document.createElement("option");
+      opt.value = n;
+      opt.textContent = n;
+      filterBookedBy.appendChild(opt);
+    });
+    if (sorted.indexOf(current) !== -1) filterBookedBy.value = current;
+  }
+
+  // Supabase caps a single request at its project "Max Rows" setting
+  // (1000 by default) — with 2000+ bookings now on file, one plain
+  // .select() would silently show staff only the newest 1000 and quietly
+  // under-count every summary stat. This pages through in batches of
+  // 1000 until a page comes back short, so every row actually loads.
+  var PAGE_SIZE = 1000;
+  // Years of Cloudbeds history are on file, so by default only bookings
+  // from the start of this year onwards are loaded ("Bookings loaded").
+  function loadFrom() {
+    var v = filterLoadFrom && filterLoadFrom.value;
+    if (v === "all") return null;
+    return (Number(v) || THIS_YEAR) + "-01-01";
+  }
+  function loadBookingsPage(offset, acc) {
+    var qy = sb.from("booking_requests")
+      .select("*, booking_cabanas(cabana_id), booking_villas(villa_id,provisional), booking_payments(method,note,status,amount)");
+    var from = loadFrom();
+    if (from) qy = qy.or("check_in.gte." + from + ",check_in.is.null,check_out.gte." + from);
+    return qy
+      .order("created_at", { ascending: false })
+      .range(offset, offset + PAGE_SIZE - 1)
+      .then(function (res) {
+        if (res.error) return Promise.reject(res.error);
+        var page = res.data || [];
+        acc = acc.concat(page);
+        if (page.length === PAGE_SIZE) {
+          countLine.textContent = "Loading… (" + acc.length + " so far)";
+          return loadBookingsPage(offset + PAGE_SIZE, acc);
+        }
+        return acc;
+      });
+  }
+
+  function loadBookings() {
+    countLine.textContent = "Loading…";
+    return loadBookingsPage(0, []).then(function (rows) {
+      allRows = rows;
+      populateBookedByOptions();
+      render();
+      if (cbLastRun === null) loadCbStatus();
+      if (deepLinkQ) { var dq = deepLinkQ; deepLinkQ = null; setTimeout(function () { openDeepLink(dq); }, 0); }
+    }, function (err) {
+      countLine.textContent = "Couldn't load bookings: " + (err && err.message ? err.message : err);
+    });
+  }
+
+  // ?q=ZH-1042 from an alert email: show that booking whatever view, section
+  // or filters were left on — clear the filters, switch to its section (and
+  // to the Reservations / Day Trips page in the Cloudbeds view), search it and
+  // open it. The ?q stays out of the address bar afterwards so a refresh
+  // doesn't reopen it.
+  function openDeepLink(q) {
+    var key = String(q).trim().toLowerCase();
+    var row = allRows.filter(function (r) {
+      return (r.order_code && r.order_code.toLowerCase() === key) || (r.cb_reservation_id && String(r.cb_reservation_id).toLowerCase() === key);
+    })[0];
+    try { var u = new URL(location.href); u.searchParams.delete("q"); history.replaceState(null, "", u.pathname + u.search + u.hash); } catch (e) {}
+    var V = window.VBRView;
+    if (V && V.current && V.current() !== "cloudbeds" && V.current() !== "new") V.set("new");
+    clearFiltersBtn.click();
+    if (row) {
+      var sec = isVillaRow(row) ? "villas" : "daytrip";
+      if (activeSection !== sec) {
+        var t = document.querySelector('#sectionTabs .sec-tab[data-section="' + sec + '"]');
+        if (t) t.click();
+      }
+    }
+    var cbv = document.body.classList.contains("cbv");
+    if (cbv && V) V.go(row && !isVillaRow(row) ? "daytrips" : "reservations", true);
+    searchBox.value = q;
+    searchBox.dispatchEvent(new Event("input"));
+    if (!row) return;
+    if (cbv && window.VBRPanel) window.VBRPanel.open(row);
+    else openBreakdown(row);
+  }
+
+  function dateOnly(d) {
+    var dt = new Date(d);
+    return new Date(dt.getFullYear(), dt.getMonth(), dt.getDate());
+  }
+  function isToday(dateStr) {
+    if (!dateStr) return false;
+    var d = dateOnly(dateStr), t = dateOnly(new Date());
+    return d.getTime() === t.getTime();
+  }
+  function isThisWeek(dateStr) {
+    if (!dateStr) return false;
+    var d = dateOnly(dateStr), t = dateOnly(new Date());
+    var start = new Date(t); start.setDate(t.getDate() - t.getDay());
+    var end = new Date(start); end.setDate(start.getDate() + 6);
+    return d >= start && d <= end;
+  }
+  function isThisMonth(dateStr) {
+    if (!dateStr) return false;
+    var d = new Date(dateStr), t = new Date();
+    return d.getFullYear() === t.getFullYear() && d.getMonth() === t.getMonth();
+  }
+
+  // [first, last] day (YYYY-MM-DD, Manila) for Today / This Week / Month / Year.
+  function ymd(d) { return d.toLocaleDateString("en-CA", { timeZone: "Asia/Manila" }); }
+  function periodFor(f) {
+    var t = new Date(ymd(new Date()) + "T00:00:00");
+    var s, e;
+    if (f === "today") { s = e = t; }
+    else if (f === "week") { s = new Date(t); s.setDate(t.getDate() - t.getDay()); e = new Date(s); e.setDate(s.getDate() + 6); }
+    else if (f === "month") { s = new Date(t.getFullYear(), t.getMonth(), 1); e = new Date(t.getFullYear(), t.getMonth() + 1, 0); }
+    else if (f === "year") { s = new Date(t.getFullYear(), 0, 1); e = new Date(t.getFullYear(), 11, 31); }
+    else return null;
+    var f2 = function (d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
+    return [f2(s), f2(e)];
+  }
+  // Day trips: the visit date falls in the period. Rooms: the stay overlaps
+  // it (so "Today" = arriving today or staying tonight).
+  function inPeriod(r, p) {
+    if (!r.check_in) return false;
+    var a = String(r.check_in).slice(0, 10);
+    if (!isVillaRow(r)) return a >= p[0] && a <= p[1];
+    var b = r.check_out ? String(r.check_out).slice(0, 10) : a;
+    return a <= p[1] && (b > p[0] || (a === b && a >= p[0]));
+  }
+  function nightsOf(r) {
+    if (!r.check_in || !r.check_out) return 0;
+    return Math.max(0, Math.round((new Date(r.check_out + "T00:00:00Z") - new Date(r.check_in + "T00:00:00Z")) / 86400000));
+  }
+
+  function partyTotal(r) {
+    return (r.adults || 0) + (r.children_6_12 || 0) + (r.children_0_5 || 0);
+  }
+
+  function isPaidStatus(status) { return status === "confirmed" || status === "completed"; }
+  function isUnpaidStatus(status) { return status === "pending" || status === "pending_payment"; }
+
+  function applyFilter(rows) {
+    var q = (searchBox.value || "").trim().toLowerCase();
+    var dField = filterDateField.value || "check_in";
+    var dFrom = filterDateFrom.value || "";
+    var dTo = filterDateTo.value || "";
+    var fStatus = filterStatus.value;
+    var fType = filterType.value;
+    var fBookedBy = filterBookedBy.value;
+    var fSource = filterSource.value;
+    var fOrigin = filterOrigin ? filterOrigin.value : "";
+
+    var period = periodFor(activeFilter);
+    return rows.filter(function (r) {
+      if (activeSection === "villas" ? !isVillaRow(r) : isVillaRow(r)) return false;
+      var matchesFilter = true;
+      if (period) matchesFilter = inPeriod(r, period);
+      else if (activeFilter === "unpaid") matchesFilter = isUnpaidStatus(r.status);
+      else if (activeFilter === "imported") matchesFilter = r.source === "sheet_import";
+      else if (activeFilter === "overnight") matchesFilter = r.stay_type === "overnight";
+      else if (activeFilter === "daytrip") matchesFilter = r.stay_type !== "overnight";
+      if (!matchesFilter) return false;
+
+      if (dFrom || dTo) {
+        var raw = r[dField];
+        if (!raw) return false;
+        var d = dateOnly(raw);
+        if (dFrom && d < dateOnly(dFrom)) return false;
+        if (dTo && d > dateOnly(dTo)) return false;
+      }
+
+      if (fStatus && (isVillaRow(r) ? villaStatusKey(r) : r.status === "confirmed" && isDownpaid(r) ? "downpaid" : r.status) !== fStatus) return false;
+      if (fType && r.stay_type !== fType) return false;
+      if (fBookedBy && r.booked_by !== fBookedBy) return false;
+      if (fSource && (r.source || "website") !== fSource) return false;
+      if (fOrigin && (fOrigin === "site" ? !/^site_/.test(originOf(r)) : originOf(r) !== fOrigin)) return false;
+
+      if (!q) return true;
+      var hay = [r.guest_name, r.guest_email, r.guest_phone, r.notes, r.staff_notes, r.booked_by, r.order_code, r.room_name, r.guest_names, r.cb_reservation_id, r.cb_info && r.cb_info.ota_ref].join(" ").toLowerCase();
+      return hay.indexOf(q) !== -1;
+    });
+  }
+
+  // ---------- sorting ----------
+  function sortValue(r, field) {
+    if (field === "party") return partyTotal(r);
+    if (field === "total_amount") return r.total_amount == null ? -Infinity : Number(r.total_amount);
+    if (field === "check_in" || field === "created_at") return r[field] ? new Date(r[field]).getTime() : -Infinity;
+    if (field === "stay_type") return (TYPE_LABELS[r.stay_type] || r.stay_type_label || r.stay_type || "").toLowerCase();
+    var v = r[field];
+    if (v === null || v === undefined) return "";
+    return String(v).toLowerCase();
+  }
+
+  function todayStr() {
+    var t = new Date();
+    return t.getFullYear() + "-" + String(t.getMonth() + 1).padStart(2, "0") + "-" + String(t.getDate()).padStart(2, "0");
+  }
+  function sortTodayFirst(rows) {
+    var today = todayStr();
+    function group(r) {
+      if (!r.check_in) return 3;
+      if (r.check_in === today) return 0;
+      return r.check_in > today ? 1 : 2;
+    }
+    return rows.slice().sort(function (a, b) {
+      var ga = group(a), gb = group(b);
+      if (ga !== gb) return ga - gb;
+      if (ga === 1 && a.check_in !== b.check_in) return a.check_in < b.check_in ? -1 : 1;  // upcoming: soonest first
+      if (ga === 2 && a.check_in !== b.check_in) return a.check_in > b.check_in ? -1 : 1;  // past: most recent first
+      return (b.created_at || "") < (a.created_at || "") ? -1 : (b.created_at || "") > (a.created_at || "") ? 1 : 0;
+    });
+  }
+
+  function sortRows(rows) {
+    if (sortField === "today_first") return sortTodayFirst(rows);
+    var field = sortField, dir = sortDir === "asc" ? 1 : -1;
+    var copy = rows.slice();
+    copy.sort(function (a, b) {
+      var va = sortValue(a, field), vb = sortValue(b, field);
+      if (va < vb) return -1 * dir;
+      if (va > vb) return 1 * dir;
+      return 0;
+    });
+    return copy;
+  }
+
+  function arrowFor(field) {
+    if (field === "today_first") return "&#9733;"; // ★ = today first
+    return sortDir === "asc" ? "&#9652;" : "&#9662;";
+  }
+  document.querySelectorAll("th.sortable").forEach(function (th) {
+    var thField = th.getAttribute("data-sort");
+    if (thField === sortField || (thField === "check_in" && sortField === "today_first")) {
+      th.classList.add("sort-active");
+      th.querySelector(".sort-arrow").innerHTML = arrowFor(sortField);
+      if (sortField === "today_first") th.title = "Sorted: today first, then upcoming, then past. Click to change.";
+    }
+    th.addEventListener("click", function () {
+      var field = thField;
+      if (field === "check_in") {
+        // cycle: today-first → oldest first → newest first → today-first
+        if (sortField === "today_first") { sortField = "check_in"; sortDir = "asc"; }
+        else if (sortField === "check_in" && sortDir === "asc") { sortDir = "desc"; }
+        else { sortField = "today_first"; sortDir = "asc"; }
+      } else if (sortField === field) {
+        sortDir = sortDir === "asc" ? "desc" : "asc";
+      } else {
+        sortField = field;
+        sortDir = field === "created_at" ? "desc" : "asc";
+      }
+      document.querySelectorAll("th.sortable").forEach(function (h) { h.classList.remove("sort-active"); h.title = ""; });
+      th.classList.add("sort-active");
+      th.querySelector(".sort-arrow").innerHTML = arrowFor(sortField);
+      if (sortField === "today_first") th.title = "Sorted: today first, then upcoming, then past. Click to change.";
+      render();
+    });
+  });
+
+  function esc(t) {
+    return String(t == null ? "" : t).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; });
+  }
+  function peso(n) {
+    if (n === null || n === undefined || n === "") return "—";
+    return "₱" + Number(n).toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  function fmtDate(s) {
+    if (!s) return "—";
+    var d = new Date(s + (s.length <= 10 ? "T00:00:00" : ""));
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  }
+  function fmtDateTime(s) {
+    if (!s) return "—";
+    var d = new Date(s);
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " +
+      d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  }
+
+  function fmtShortDate(s) {
+    if (!s) return "";
+    var d = new Date(s), y = d.getFullYear() !== new Date().getFullYear();
+    return "entered " + d.toLocaleDateString(undefined, y ? { month: "short", day: "numeric", year: "2-digit" } : { month: "short", day: "numeric" });
+  }
+  function updateField(id, field, value, el) {
+    var patch = {};
+    patch[field] = value;
+    sb.from("booking_requests").update(patch).eq("id", id).then(function (res) {
+      if (res.error && el) {
+        el.style.background = "#fde3d0";
+        setTimeout(function () { el.style.background = ""; }, 1500);
+      }
+    });
+  }
+
+  // ---------- summary stats (recomputed from whatever is currently filtered) ----------
+  function renderSummary(rows) {
+    var guests = 0, paidTotal = 0, paidCount = 0, unpaidTotal = 0, unpaidCount = 0, roomNights = 0;
+    rows.forEach(function (r) {
+      guests += partyTotal(r);
+      if (isVillaRow(r) && r.status !== "declined" && r.status !== "expired") roomNights += nightsOf(r) * Math.max(1, (r.booking_villas || []).length);
+      var amt = r.total_amount != null ? Number(r.total_amount) : 0;
+      if (isPaidStatus(r.status)) { paidTotal += amt; paidCount++; }
+      else if (isUnpaidStatus(r.status)) { unpaidTotal += amt; unpaidCount++; }
+    });
+    summaryBar.innerHTML =
+      '<div class="summary-tile"><div class="summary-label">Bookings Shown</div><div class="summary-value">' + rows.length + '</div></div>' +
+      '<div class="summary-tile"><div class="summary-label">Total Guests</div><div class="summary-value">' + guests + '</div></div>' +
+      (activeSection === "villas" ? '<div class="summary-tile"><div class="summary-label">Room Nights</div><div class="summary-value">' + roomNights + '</div><div class="summary-sub">room × nights, excl. cancelled</div></div>' : "") +
+      '<div class="summary-tile paid"><div class="summary-label">Total Paid</div><div class="summary-value">' + peso(paidTotal) + '</div><div class="summary-sub">' + paidCount + " confirmed/completed</div></div>" +
+      '<div class="summary-tile unpaid"><div class="summary-label">Total Unpaid</div><div class="summary-value">' + peso(unpaidTotal) + '</div><div class="summary-sub">' + unpaidCount + " pending</div></div>";
+  }
+
+  // Display only — cabanas are added/removed in the ✎ edit form (on the map).
+  function cabanaLabelsFor(r) {
+    return (r.booking_cabanas || []).map(function (bc) {
+      var c = cabanasById[bc.cabana_id];
+      return c ? c.label : "Unknown cabana";
+    });
+  }
+  function renderCabanaCell(td, r) {
+    td.innerHTML = "";
+    td.className = "cabana-cell";
+    if (r.stay_type === "overnight") {
+      var vlabels = window.VBRVillas ? window.VBRVillas.labelsFor(r) : [];
+      if (!vlabels.length) { td.innerHTML = '<span class="muted">— no villa</span>'; return; }
+      var vwrap = document.createElement("div");
+      vwrap.className = "cabana-cell-chips";
+      vlabels.forEach(function (l) {
+        var chip = document.createElement("span");
+        chip.className = "cabana-mini-chip villa-chip";
+        chip.style.paddingRight = "10px";
+        chip.textContent = l;
+        vwrap.appendChild(chip);
+      });
+      td.appendChild(vwrap);
+      return;
+    }
+    var assignedIds = (r.booking_cabanas || []).map(function (bc) { return bc.cabana_id; });
+    var n = countsOf(r);
+    if (!n.dining && !n.lounge) { td.innerHTML = '<span class="muted">—</span>'; return; }
+    var countLine = document.createElement("div");
+    countLine.style.fontSize = "0.82rem";
+    countLine.style.fontWeight = "600";
+    countLine.textContent = [n.dining ? n.dining + " dining" : "", n.lounge ? n.lounge + " lounge" : ""].filter(Boolean).join(" · ");
+    td.appendChild(countLine);
+    if (!assignedIds.length) {
+      var na = document.createElement("div");
+      na.className = "muted"; na.style.fontSize = "0.76rem";
+      na.textContent = releasesCabanas(r.status) ? "" : "no. not assigned yet";
+      td.appendChild(na);
+      return;
+    }
+    var chipWrap = document.createElement("div");
+    chipWrap.className = "cabana-cell-chips";
+    var rowBlocks = releasesCabanas(r.status) ? null : blocksForDate(r.check_in);
+    assignedIds.forEach(function (id) {
+      var c = cabanasById[id];
+      var chip = document.createElement("span");
+      chip.className = "cabana-mini-chip";
+      chip.style.paddingRight = "10px";
+      chip.textContent = c ? cabShort(c) + (cabKind(c) === "lounge" ? " L" : "") : "Unknown cabana";
+      chip.title = c ? c.label : "";
+      if (rowBlocks && rowBlocks.set.has(id)) {
+        chip.classList.add("is-blocked-conflict");
+        chip.textContent = "⚠ " + chip.textContent;
+        chip.title = "This cabana is blocked on this date — " + rowBlocks.info[id] + ". Assign another one.";
+      }
+      chipWrap.appendChild(chip);
+    });
+    td.appendChild(chipWrap);
+  }
+
+  function openSignedUrl(bucket, path) {
+    sb.storage.from(bucket).createSignedUrl(path, 3600).then(function (res) {
+      if (res.data && res.data.signedUrl) window.open(res.data.signedUrl, "_blank");
+      else alert("Couldn't open the file" + (res.error ? ": " + res.error.message : "."));
+    });
+  }
+  function proofLinks(r) {
+    var links = [];
+    if (r.payment_screenshot_path) links.push({ text: "View payment proof", bucket: "payment-proofs", path: r.payment_screenshot_path });
+    (r.senior_id_paths || []).forEach(function (path, i, all) {
+      links.push({ text: "View senior ID" + (all.length > 1 ? " " + (i + 1) : ""), bucket: "senior-ids", path: path });
+    });
+    (r.pet_vaccination_paths || []).forEach(function (path, i, all) {
+      links.push({ text: "View pet vaccination card" + (all.length > 1 ? " " + (i + 1) : ""), bucket: "pet-vaccinations", path: path });
+    });
+    return links;
+  }
+  // ---------- Source: where the booking was made + the channel ----------
+  function sourceHtml(r) {
+    var o = originOf(r), ch = SOURCE_LABELS[r.source] || r.source || "";
+    // "Website · Guest" + "Website" says the same thing twice
+    if ((o === "site_guest" && r.source === "website") || (o === "sheet" && r.source === "sheet_import")) ch = "";
+    return originBadge(r) + (ch ? '<span class="src-line">via ' + esc(ch) + "</span>" : "") +
+      (r.cb_reservation_id ? '<span class="src-line">' + cbLinkHtml(r) + "</span>" : "") +
+      (r.cb_info && r.cb_info.ota_ref && r.cb_owned ? '<span class="src-line">ref ' + esc(r.cb_info.ota_ref) + "</span>" : "");
+  }
+
+  // ---------- Notes: guest's message + staff notes in one column ----------
+  function clip(t, n) { t = String(t || "").replace(/\s+/g, " ").trim(); return t.length > n ? t.slice(0, n - 1) + "…" : t; }
+  function renderNotesCell(td, r) {
+    var h = "";
+    if (r.notes) h += '<span class="note-prev"><b>Guest</b>' + esc(clip(r.notes, 90)) + "</span>";
+    if (r.staff_notes) h += '<span class="note-prev"><b>Staff</b>' + esc(clip(r.staff_notes, 90)) + "</span>";
+    td.innerHTML = h || '<span class="note-add">+ add note</span>';
+  }
+  var notesBackdrop = document.getElementById("notesModalBackdrop"), notesCur = null;
+  function closeNotes() { if (notesBackdrop) notesBackdrop.classList.remove("open"); notesCur = null; }
+  function openNotes(r, td) {
+    if (!notesBackdrop) return;
+    notesCur = { r: r, td: td };
+    document.getElementById("nmTitle").textContent = "Notes · " + (r.guest_name || "Booking") + (r.order_code ? " (" + r.order_code + ")" : "");
+    document.getElementById("nmGuestWrap").style.display = r.notes ? "" : "none";
+    document.getElementById("nmGuest").textContent = r.notes || "";
+    var ta = document.getElementById("nmStaff");
+    ta.value = r.staff_notes || "";
+    document.getElementById("nmStatus").textContent = "";
+    notesBackdrop.classList.add("open");
+    setTimeout(function () { ta.focus(); }, 30);
+  }
+  if (notesBackdrop) {
+    document.getElementById("nmCancel").addEventListener("click", closeNotes);
+    notesBackdrop.addEventListener("click", function (e) { if (e.target === notesBackdrop) closeNotes(); });
+    document.addEventListener("keydown", function (e) { if (e.key === "Escape" && notesCur) closeNotes(); });
+    document.getElementById("nmSave").addEventListener("click", function () {
+      if (!notesCur) return;
+      var r = notesCur.r, td = notesCur.td, val = document.getElementById("nmStaff").value.trim();
+      if (val === (r.staff_notes || "")) { closeNotes(); return; }
+      var st = document.getElementById("nmStatus"), btn = this;
+      btn.disabled = true; st.textContent = "Saving…";
+      sb.from("booking_requests").update({ staff_notes: val || null }).eq("id", r.id).then(function (res) {
+        btn.disabled = false;
+        if (res.error) { st.textContent = "Couldn't save: " + res.error.message; return; }
+        r.staff_notes = val || null;
+        renderNotesCell(td, r);
+        closeNotes();
+      });
+    });
+  }
+
+  // ---------- how it was paid (booking_payments) ----------
+  var CHANNEL_NAMES = { GCASH: "GCash", PAYMAYA: "Maya", MAYA: "Maya", GRABPAY: "GrabPay", SHOPEEPAY: "ShopeePay", QRPH: "QR Ph",
+    CREDIT_CARD: "Card", CARDS: "Card", VISA: "Card", MASTERCARD: "Card", JCB: "Card", AMEX: "Card", DEBIT_CARD: "Card",
+    APPLE_PAY: "Apple Pay", GOOGLE_PAY: "Google Pay", DD_BPI: "BPI online", BPI: "BPI online", DD_RCBC: "RCBC online", RCBC: "RCBC online",
+    DD_UBP: "UnionBank online", UBP: "UnionBank online", CEBUANA: "Cebuana", EWALLET: "e-wallet", QR_CODE: "QR Ph", DIRECT_DEBIT: "online banking" };
+  function payMethodName(p) {
+    if (p.method === "xendit") {
+      var parts = String(p.note || "").split("·").map(function (x) { return x.trim(); });
+      var ch = parts[1] && !/^invoice /.test(parts[1]) ? parts[1].toUpperCase() : "";
+      var nice = CHANNEL_NAMES[ch] || (ch ? ch.charAt(0) + ch.slice(1).toLowerCase().replace(/_/g, " ") : "");
+      return (nice ? nice + " · " : "") + "Xendit";
+    }
+    return { transfer: "Bank transfer (manual)", link: "Payment link", cash: "Cash", card: "Card at the front desk", other: "Other" }[p.method] || p.method || "";
+  }
+  function payMethods(r) {
+    var seen = {}, out = [];
+    (r.booking_payments || []).forEach(function (p) {
+      if (p.status === "rejected") return;
+      var n = payMethodName(p);
+      if (n && !seen[n]) { seen[n] = true; out.push(n); }
+    });
+    return out;
+  }
+
+  // Display only — payment proofs are uploaded from the ✎ edit form.
+  function renderPayCell(td, r) {
+    td.innerHTML = "";
+    // Payments (50% / 100% / balance) — website & dashboard bookings
+    if (!r.cb_owned && r.total_amount != null && window.VBRPayments) {
+      var total = Number(r.total_amount) || 0, paid = Number(r.amount_paid) || 0;
+      var box = document.createElement("div");
+      var fig = document.createElement("span");
+      fig.className = "pay-cell-fig";
+      // sheet bookings: the 2026 sheet tracked payment by status, not by amount
+      var sheetPaid = r.source === "sheet_import" && paid <= 0 && (r.status === "confirmed" || r.status === "completed");
+      fig.textContent = sheetPaid ? "Paid (as seen in Sheet)" : paid >= total - 0.5 && paid > 0 ? "Paid in full" : paid > 0 ? "Paid " + peso(paid) + " of " + peso(total) : "Unpaid";
+      if (sheetPaid) fig.title = "Marked paid / confirmed in the 2026 Day Trip sheet. The amount and method weren't recorded on the website — check the sheet or bank records for details.";
+      box.appendChild(fig);
+      var how = payMethods(r);
+      if (how.length) {
+        var hw = document.createElement("span");
+        hw.className = "pay-how";
+        hw.textContent = how.join(" + ");
+        box.appendChild(hw);
+      }
+      if (paid > 0 && paid < total - 0.5 && r.check_in) {
+        var dueD = new Date(r.check_in + "T00:00:00Z"); dueD.setUTCDate(dueD.getUTCDate() - 15);
+        var dueS = dueD.toISOString().slice(0, 10), late = dueS < new Date().toISOString().slice(0, 10);
+        var dl2 = document.createElement("span");
+        dl2.className = "payby" + (late ? " overdue" : "");
+        dl2.textContent = "balance " + peso(total - paid) + (late ? " overdue since " : " due ") + fmtDate(dueS);
+        box.appendChild(dl2);
+      }
+      if (Number(r.amount_pending) > 0 || r.status === "pending_payment") {
+        var tv = document.createElement("span");
+        tv.className = "payby overdue";
+        tv.textContent = Number(r.amount_pending) > 0 ? peso(r.amount_pending) + " to verify" : "proof to verify";
+        box.appendChild(tv);
+      }
+      var open = document.createElement("a");
+      open.href = "#";
+      open.className = "pay-open";
+      open.textContent = "Payments ›";
+      open.addEventListener("click", function (e) { e.preventDefault(); window.VBRPayments.open(r); });
+      box.appendChild(open);
+      td.appendChild(box);
+      return;
+    }
+    // Cloudbeds-made bookings: money is taken and recorded in Cloudbeds
+    if (r.cb_owned && r.cb_info && (r.cb_info.total != null || r.cb_info.balance != null || r.cb_info.paid != null)) {
+      var ct = r.cb_info.total != null ? Number(r.cb_info.total) : null, cbal = r.cb_info.balance != null ? Number(r.cb_info.balance) : null;
+      var cp = r.cb_info.paid != null ? Number(r.cb_info.paid) : (ct != null && cbal != null ? ct - cbal : null);
+      var f2 = document.createElement("span");
+      f2.className = "pay-cell-fig";
+      f2.textContent = ct != null && cp != null && cp >= ct - 0.5 && cp > 0 ? "Paid in full" : cp > 0 ? "Paid " + peso(cp) + (ct != null ? " of " + peso(ct) : "") : "Unpaid";
+      td.appendChild(f2);
+      var h2 = document.createElement("span");
+      h2.className = "pay-how";
+      h2.textContent = cp > 0 ? "recorded in Cloudbeds" : "collected via Cloudbeds";
+      h2.title = "This booking was made in Cloudbeds (or an OTA), so its payments are taken and recorded there. Open it in Cloudbeds to see how it was paid.";
+      td.appendChild(h2);
+      if (cbal != null && cbal > 0.5 && cp > 0) {
+        var b2 = document.createElement("span");
+        b2.className = "payby";
+        b2.textContent = "balance " + peso(cbal);
+        td.appendChild(b2);
+      }
+    }
+    var links = proofLinks(r);
+    if (!links.length) { if (!td.firstChild) td.innerHTML = '<span class="muted">—</span>'; return; }
+    links.forEach(function (l) {
+      var a = document.createElement("a");
+      a.className = "pay-link";
+      a.href = "#";
+      a.textContent = l.text;
+      a.addEventListener("click", function (e) { e.preventDefault(); openSignedUrl(l.bucket, l.path); });
+      td.appendChild(a);
+      td.appendChild(document.createElement("br"));
+    });
+  }
+
+  function applySectionChrome() {
+    Array.prototype.forEach.call(document.querySelectorAll("#sectionTabs .sec-tab"), function (t) {
+      t.classList.toggle("active", t.getAttribute("data-section") === activeSection);
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-section]:not(.sec-tab)"), function (el) {
+      el.style.display = el.getAttribute("data-section") === activeSection ? "" : "none";
+    });
+    var table = bookingsBody.closest("table");
+    if (table) table.classList.toggle("mode-villas", activeSection === "villas");
+    var th = document.getElementById("thDate"), tu = document.getElementById("thUnits");
+    if (th) th.textContent = activeSection === "villas" ? "Arrive → Depart" : "Date";
+    if (tu) tu.textContent = activeSection === "villas" ? "Room(s)" : "Cabana(s)";
+    var nV = 0, nD = 0;
+    allRows.forEach(function (r) { if (isVillaRow(r)) nV++; else nD++; });
+    var cv = document.getElementById("secCountVillas"), cd = document.getElementById("secCountDaytrip");
+    if (cv) cv.textContent = nV.toLocaleString();
+    if (cd) cd.textContent = nD.toLocaleString();
+    searchBox.placeholder = activeSection === "villas" ? "Search guest, Cloudbeds #, villa, notes…" : "Search guest, contact, notes…";
+    // status filter: Cloudbeds' six for villas, ours for day trips
+    var keepSt = filterStatus.value, order = activeSection === "villas" ? VILLA_ORDER : STATUS_ORDER;
+    filterStatus.innerHTML = '<option value="">All statuses</option>' + order.map(function (k) {
+      return '<option value="' + k + '">' + esc(activeSection === "villas" ? VILLA_LABELS[k] : STATUS_LABELS[k]) + "</option>";
+    }).join("");
+    filterStatus.value = order.indexOf(keepSt) !== -1 ? keepSt : "";
+  }
+  document.getElementById("sectionTabs").addEventListener("click", function (e) {
+    var t = e.target.closest(".sec-tab");
+    if (!t) return;
+    activeSection = t.getAttribute("data-section");
+    try { localStorage.setItem("vbr.section", activeSection); } catch (err) {}
+    if (activeSection === "villas") filterType.value = "";
+    render();
+  });
+
+  function render() {
+    applySectionChrome();
+    try { document.dispatchEvent(new CustomEvent("vbr:render")); } catch (e) {}
+    var filtered = applyFilter(allRows);
+    renderSummary(filtered);
+    var rows = sortRows(filtered);
+    var inSection = allRows.filter(function (r) { return activeSection === "villas" ? isVillaRow(r) : !isVillaRow(r); }).length;
+    var from = loadFrom();
+    countInfo = { total: rows.length, inSection: inSection, kind: activeSection === "villas" ? " villa bookings" : " day-trip bookings",
+      tail: from ? " · loaded from " + fmtDate(from) + " (change under “Bookings loaded”)" : " · all years loaded" };
+    updateCountLine(0);
+    if (!rows.length) {
+      renderQueue = [];
+      bookingsBody.innerHTML = '<tr class="empty-row"><td colspan="16">No bookings match this view.</td></tr>';
+      listChanged();
+      return;
+    }
+    // Only the first rows are drawn; more are added as you scroll (drawing
+    // thousands of rows at once is slow on older computers). Summaries,
+    // filters, search and CSV export still cover every booking.
+    var viewKey = renderViewKey();
+    var keepShown = viewKey === lastViewKey ? renderShown : 0;
+    lastViewKey = viewKey;
+    bookingsBody.innerHTML = "";
+    renderQueue = rows;
+    renderShown = 0;
+    // The Cloudbeds view draws its own paged list from the same rows.
+    if (!document.body.classList.contains("cbv")) appendRows(Math.max(ROW_BATCH, keepShown));
+    listChanged();
+  }
+  function listChanged() { try { document.dispatchEvent(new CustomEvent("vbr:list")); } catch (e) {} }
+
+  var ROW_BATCH = 50, renderQueue = [], renderShown = 0, lastViewKey = null, moreRow = null, countInfo = null;
+  function updateCountLine(shown) {
+    var c = countInfo;
+    if (!c) return;
+    var matched = c.total < c.inSection ? " matching (" + c.inSection.toLocaleString() + c.kind + " in total)" : c.kind;
+    countLine.textContent = shown && shown < c.total
+      ? "Showing " + shown.toLocaleString() + " of " + c.total.toLocaleString() + matched + " · more load as you scroll" + c.tail
+      : c.total.toLocaleString() + " of " + c.inSection.toLocaleString() + c.kind + " shown" + c.tail;
+  }
+  var moreObserver = "IntersectionObserver" in window ? new IntersectionObserver(function (entries) {
+    if (entries.some(function (e) { return e.isIntersecting; })) appendRows(ROW_BATCH);
+  }, { rootMargin: "800px 0px" }) : null;
+  function renderViewKey() {
+    var parts = [activeSection, searchBox.value];
+    Array.prototype.forEach.call(document.querySelectorAll("#filtersRow select, #filtersRow input, #filterPills .pill.active, thead th.sort-active"), function (el) {
+      parts.push(el.value !== undefined && el.tagName !== "BUTTON" && el.tagName !== "TH" ? el.value : el.className + el.textContent);
+    });
+    return parts.join("|");
+  }
+  function appendRows(count) {
+    if (moreRow) { if (moreObserver) moreObserver.unobserve(moreRow); if (moreRow.parentNode) moreRow.parentNode.removeChild(moreRow); }
+    var frag = document.createDocumentFragment();
+    var end = Math.min(renderShown + count, renderQueue.length);
+    for (var i = renderShown; i < end; i++) frag.appendChild(buildBookingRow(renderQueue[i]));
+    renderShown = end;
+    bookingsBody.appendChild(frag);
+    updateCountLine(renderShown);
+    if (renderShown < renderQueue.length) {
+      moreRow = document.createElement("tr");
+      moreRow.className = "more-row";
+      moreRow.innerHTML = '<td colspan="12"><button type="button" class="btn-sm ghost">Show more</button> <span class="muted">Showing ' +
+        renderShown.toLocaleString() + " of " + renderQueue.length.toLocaleString() + " · more load as you scroll</span></td>";
+      moreRow.querySelector("button").addEventListener("click", function () { appendRows(ROW_BATCH * 4); });
+      bookingsBody.appendChild(moreRow);
+      if (moreObserver) moreObserver.observe(moreRow);
+    } else {
+      moreRow = null;
+    }
+  }
+
+  function buildBookingRow(r) {
+      var tr = document.createElement("tr");
+
+      var tdOrder = document.createElement("td");
+      tdOrder.innerHTML = '<a href="#" class="order-code" style="color:inherit;text-decoration:underline dotted;text-underline-offset:3px;cursor:pointer" title="Open this booking">' + esc(r.order_code || "—") + "</a>" +
+        '<span class="bk-meta" title="Entered ' + esc(fmtDateTime(r.created_at)) + '">' + esc(fmtShortDate(r.created_at)) + "</span>" +
+        (r.booked_by ? '<span class="bk-meta" title="Entered by staff">by ' + esc(r.booked_by) + "</span>" : "");
+      // the booking number opens the booking, like ✎
+      tdOrder.querySelector(".order-code").addEventListener("click", function (e) {
+        e.preventDefault();
+        if (r.stay_type === "overnight" && window.VBRVillas) window.VBRVillas.openBooking(r); else openModal(r);
+      });
+      tr.appendChild(tdOrder);
+
+      var tdGuest = document.createElement("td");
+      tdGuest.className = "col-guest";
+      tdGuest.innerHTML = esc(r.guest_name || "—") +
+        (r.guest_phone ? '<span class="g-contact">' + esc(r.guest_phone) + "</span>" : "") +
+        (r.guest_email ? '<span class="g-contact">' + esc(r.guest_email) + "</span>" : "");
+      tr.appendChild(tdGuest);
+
+      var tdType = document.createElement("td");
+      tdType.className = "col-type";
+      tdType.innerHTML = '<span class="type-badge">' + (TYPE_LABELS[r.stay_type] || r.stay_type_label || r.stay_type || "—") + "</span>";
+      tr.appendChild(tdType);
+
+      var tdDate = document.createElement("td");
+      tdDate.textContent = fmtDate(r.check_in);
+      if (r.stay_type === "overnight" && r.check_out) {
+        var nn = Math.round((new Date(r.check_out + "T00:00:00Z") - new Date(r.check_in + "T00:00:00Z")) / 86400000);
+        tdDate.innerHTML = esc(fmtDate(r.check_in)) + '<span class="payby">→ ' + esc(fmtDate(r.check_out)) + " · " + nn + " night" + (nn === 1 ? "" : "s") + "</span>";
+      }
+      tr.appendChild(tdDate);
+
+      var tdCabana = document.createElement("td");
+      renderCabanaCell(tdCabana, r);
+      tr.appendChild(tdCabana);
+
+      var tdParty = document.createElement("td");
+      var kids = (r.children_6_12 || 0) + (r.children_0_5 || 0);
+      var partyText = (r.adults || 0) + " adult" + (r.adults === 1 ? "" : "s") + (kids ? ", " + kids + " kid" + (kids === 1 ? "" : "s") : "");
+      if (r.senior_count || r.pwd_kid_count) partyText += " (incl. " + [r.senior_count ? r.senior_count + " senior/PWD" : "", r.pwd_kid_count ? r.pwd_kid_count + " PWD kid" + (r.pwd_kid_count === 1 ? "" : "s") : ""].filter(Boolean).join(", ") + ")";
+      if (r.pet_count) partyText += ", " + r.pet_count + " pet" + (r.pet_count === 1 ? "" : "s");
+      if (r.extra_beds) partyText += " · " + r.extra_beds + " extra bed" + (r.extra_beds === 1 ? "" : "s");
+      tdParty.textContent = partyText;
+      if (r.stay_type === "overnight" && r.source === "website" && !(r.companions && r.companions.length + 1 === partyTotal(r))) {
+        tdParty.innerHTML += '<span class="payby overdue">guest names missing</span>';
+      }
+      if (r.guest_names) tdParty.title = "Guests: " + r.guest_names;
+      tr.appendChild(tdParty);
+
+      var tdTotal = document.createElement("td");
+      tdTotal.className = "col-total";
+      tdTotal.innerHTML = esc(peso(r.total_amount)) + '<span class="bd-link">Breakdown ›</span>';
+      tdTotal.addEventListener("click", function () { openBreakdown(r); });
+      if (r.total_amount != null && r.stay_type === "overnight") {
+        tdTotal.title = "Room: " + peso(r.room_total) + " · Meals: " + peso(r.meal_total) + (Number(r.extra_bed_total) ? " · Extra beds: " + peso(r.extra_bed_total) : "") +
+          (Number(r.pet_total) ? " · Pets: " + peso(r.pet_total) : "") + (Number(r.add_on_total) ? " · Add-ons: " + peso(r.add_on_total) : "") +
+          (Number(r.online_discount) ? " · Convenience Discount: −" + peso(r.online_discount) : "") + (Number(r.code_discount) ? " · Code " + esc(r.discount_code || "") + ": −" + peso(r.code_discount) : "") + (Number(r.discount_amount) ? " · Discount: −" + peso(r.discount_amount) : "");
+      } else if (r.total_amount != null) {
+        tdTotal.title = "People: " + peso(r.subtotal_people) + (r.senior_discount ? " (incl. " + peso(r.senior_discount) + " senior discount)" : "") + " · Cabana(s): " + peso(r.cabana_total);
+      }
+      if (isVillaRow(r) && r.cb_info) {
+        if (!r.cb_owned && r.cb_info.total != null && r.total_amount != null && Math.abs(Number(r.cb_info.total) - Number(r.total_amount)) > 1) {
+          tdTotal.innerHTML += '<span class="payby overdue" title="Cloudbeds priced it from its own rate plan. Adjust the folio in Cloudbeds so it matches the website total.">Cloudbeds: ' + esc(peso(r.cb_info.total)) + "</span>";
+        }
+      }
+      tr.appendChild(tdTotal);
+
+      var tdStatus = document.createElement("td");
+      var statusBadge = document.createElement("span");
+      statusBadge.className = "status-badge readonly status-" + r.status;
+      statusBadge.textContent = statusLabel(r);
+      if (isVillaRow(r) && r.status === "pending_payment") statusBadge.title = "Proof of payment received — verify it under Payments";
+      statusBadge.title = "Change the status with ✎ Edit";
+      tdStatus.appendChild(statusBadge);
+      // v61: why staff cancelled it (from the dashboard's Cancel reservation)
+      if (r.status === "declined" && r.cancel_reason) {
+        var cx = document.createElement("span");
+        cx.className = "payby";
+        cx.textContent = (CANCEL_REASONS[r.cancel_reason] || r.cancel_reason) + (r.cancelled_by ? " · by " + String(r.cancelled_by).replace(/@.*/, "") : "");
+        cx.title = "Cancelled " + fmtDateTime(r.cancelled_at) + (r.cancel_note ? " — " + r.cancel_note : "") + (r.cancel_notify ? " · guest emailed by Cloudbeds" : " · guest not emailed");
+        tdStatus.appendChild(cx);
+      }
+      if (isVillaRow(r) && r.cb_info && r.cb_info.status && (CB_STATUS[r.cb_info.status] || r.cb_info.status) !== statusLabel(r) &&
+          !(r.cb_info.status === "not_confirmed" && statusLabel(r) === "Confirmation Pending")) {
+        var cbs = document.createElement("span");
+        cbs.className = "payby cb-status";
+        cbs.textContent = "Cloudbeds: " + (CB_STATUS[r.cb_info.status] || r.cb_info.status);
+        cbs.title = "Cloudbeds shows a different status — it updates here within a few minutes.";
+        tdStatus.appendChild(cbs);
+      }
+      if (cbWaiting(r) && cbPushOn === false) {
+        var ct = document.createElement("span");
+        ct.className = "payby";
+        ct.textContent = "Test mode: not sent to Cloudbeds";
+        ct.title = "Until launch, website villa bookings stay on the website only.";
+        tdStatus.appendChild(ct);
+      } else if (cbWaiting(r)) {
+        var cw = document.createElement("span");
+        cw.className = "payby" + (r.cb_push_state === "error" ? " overdue" : "");
+        cw.textContent = r.cb_push_state === "error" ? "⚠ Not in Cloudbeds yet" : "Sending to Cloudbeds…";
+        cw.title = r.cb_push_error ? "Cloudbeds said: " + r.cb_push_error + " — it's retried every 5 minutes. If it keeps failing, add the booking in Cloudbeds by hand." : "Created in Cloudbeds within a minute.";
+        tdStatus.appendChild(cw);
+      } else if (r.cb_push_state === "done" && r.cb_push_error) {
+        var cn = document.createElement("span");
+        cn.className = "payby overdue";
+        cn.textContent = "⚠ Check room in Cloudbeds";
+        cn.title = r.cb_push_error;
+        tdStatus.appendChild(cn);
+      }
+      if (cbClashes(r).length && r.status !== "declined" && r.status !== "expired") {
+        var cc = document.createElement("span");
+        cc.className = "payby overdue";
+        cc.textContent = "⚠ Room clash";
+        cc.title = cbClashes(r).join("\n") + "\nFix the room assignment in Cloudbeds.";
+        tdStatus.appendChild(cc);
+      }
+      if ((r.status === "pending" || r.status === "pending_payment") && !r.payment_uploaded_at) {
+        var dl = paymentDeadlines(r);
+        var pb = document.createElement("span");
+        pb.className = "payby";
+        if (r.stay_type !== "overnight") {
+          // v47: day trips are kept until 5 PM on the trip day
+          var close5 = r.check_in ? new Date(r.check_in + "T17:00:00+08:00").getTime() : null;
+          pb.textContent = !dl ? "pay on arrival" : Date.now() >= dl.final ? "unpaid — held until 5 PM trip day" : "pay by " + fmtDateTime(new Date(dl.final).toISOString());
+          if (close5 && Date.now() >= close5 - 9 * 3600e3) pb.classList.add("overdue");
+          pb.title = "Day trips stay booked until 5:00 PM on the trip day. Guests get a reminder, then an 8 AM \"expecting you\" email; if still unpaid at 5 PM the booking closes and the guest is emailed.";
+        } else if (r.check_in && r.created_at && (new Date(r.check_in + "T00:00:00+08:00") - new Date(new Date(r.created_at).toLocaleDateString("en-CA", { timeZone: "Asia/Manila" }) + "T00:00:00+08:00")) / 86400000 < 15) {
+          // v48: villas booked within 14 days — full payment, reminder at 24 h, staff cancel manually
+          pb.textContent = dl && Date.now() < dl.final ? "full payment by " + fmtDateTime(new Date(dl.final).toISOString()) : "unpaid — staff to follow up";
+          if (!dl || Date.now() >= dl.final) pb.classList.add("overdue");
+          pb.title = "Booked within 14 days of arrival: full payment required. The guest gets a reminder 24 hours after booking; it is not cancelled automatically — use “Cancel booking — not paid” in the booking if needed.";
+        } else if (!dl) pb.textContent = "pay on arrival";
+        else {
+          var nowMs = Date.now();
+          pb.textContent = nowMs >= dl.final ? "past deadline — expiring" : "pay by " + fmtDateTime(new Date(dl.final).toISOString());
+          if (nowMs >= dl.final - 3 * 3600e3) pb.classList.add("overdue");
+          pb.title = "Expires at " + fmtDateTime(new Date(dl.final).toISOString()) + " if still unpaid; the cabana(s) are then released.";
+        }
+        tdStatus.appendChild(pb);
+      } else if (r.status === "expired" && r.expired_at) {
+        var ex = document.createElement("span");
+        ex.className = "payby";
+        ex.textContent = "unpaid · released " + fmtDateTime(r.expired_at);
+        tdStatus.appendChild(ex);
+      }
+      tr.appendChild(tdStatus);
+
+      var tdPay = document.createElement("td");
+      tdPay.className = "pay-cell";
+      renderPayCell(tdPay, r);
+      tr.appendChild(tdPay);
+
+      var tdSource = document.createElement("td");
+      tdSource.innerHTML = sourceHtml(r);
+      tr.appendChild(tdSource);
+
+      var tdNotes = document.createElement("td");
+      tdNotes.className = "col-notes2";
+      tdNotes.title = "Click to read all or edit the staff notes";
+      renderNotesCell(tdNotes, r);
+      tdNotes.addEventListener("click", function () { openNotes(r, tdNotes); });
+      tr.appendChild(tdNotes);
+
+      var tdLog = document.createElement("td");
+      var actions = document.createElement("div");
+      actions.className = "row-actions";
+      var editBtnCell = document.createElement("button");
+      editBtnCell.type = "button";
+      editBtnCell.className = "log-btn";
+      editBtnCell.title = "Edit this booking";
+      editBtnCell.textContent = "✎";
+      editBtnCell.addEventListener("click", function () {
+        if (r.stay_type === "overnight" && window.VBRVillas) window.VBRVillas.openBooking(r);
+        else openModal(r);
+      });
+      actions.appendChild(editBtnCell);
+      var logBtnCell = document.createElement("button");
+      logBtnCell.type = "button";
+      logBtnCell.className = "log-btn";
+      logBtnCell.title = "View activity log for this booking";
+      logBtnCell.textContent = "🕘";
+      logBtnCell.addEventListener("click", function () {
+        openLogModal(r.id, (r.guest_name || "This booking") + (r.order_code ? " (" + r.order_code + ")" : ""));
+      });
+      actions.appendChild(logBtnCell);
+      tdLog.appendChild(actions);
+      tr.appendChild(tdLog);
+
+      return tr;
+  }
+
+  filterPills.addEventListener("click", function (e) {
+    var pill = e.target.closest(".pill");
+    if (!pill) return;
+    Array.prototype.forEach.call(filterPills.querySelectorAll(".pill"), function (p) { p.classList.remove("active"); });
+    pill.classList.add("active");
+    activeFilter = pill.getAttribute("data-filter");
+    render();
+  });
+  searchBox.addEventListener("input", render);
+  [filterDateField, filterDateFrom, filterDateTo, filterStatus, filterType, filterBookedBy, filterSource, filterOrigin].filter(Boolean).forEach(function (el) {
+    el.addEventListener("change", render);
+  });
+  clearFiltersBtn.addEventListener("click", function () {
+    Array.prototype.forEach.call(filterPills.querySelectorAll(".pill"), function (p) { p.classList.remove("active"); });
+    filterPills.querySelector('.pill[data-filter="all"]').classList.add("active");
+    activeFilter = "all";
+    searchBox.value = "";
+    filterDateField.value = "check_in";
+    filterDateFrom.value = "";
+    filterDateTo.value = "";
+    filterStatus.value = "";
+    filterType.value = "";
+    filterBookedBy.value = "";
+    filterSource.value = "";
+    if (filterOrigin) filterOrigin.value = "";
+    render();
+  });
+
+  // ---------- add / edit booking modal ----------
+  // One form does both: "+ Add Booking" opens it blank, the ✎ button on a
+  // row opens it pre-filled. Edits only send the fields that actually
+  // changed, so the activity log (log_booking_change trigger) shows a clean
+  // "field: old → new" line per change, attributed to whoever is signed in.
+  var addBtn = document.getElementById("addBtn");
+  var addModalBackdrop = document.getElementById("addModalBackdrop");
+  var addForm = document.getElementById("addForm");
+  var cancelAddBtn = document.getElementById("cancelAddBtn");
+  var modalTitle = document.getElementById("bookingModalTitle");
+  var modalSub = document.getElementById("bookingModalSub");
+  var saveBookingBtn = document.getElementById("saveBookingBtn");
+  var addError = document.getElementById("addError");
+  var addDateEl = document.getElementById("addDate");
+  var addMapEl = document.getElementById("addCabanaMap");
+  var addMapStatus = document.getElementById("addMapStatus");
+  var addSelectedEl = document.getElementById("addCabanaSelected");
+  var staffNotesField = document.getElementById("addStaffNotesField");
+  var paymentField = document.getElementById("addPaymentField");
+  var payExistingEl = document.getElementById("addPayExisting");
+  var payFileEl = document.getElementById("addPayFile");
+  var notifyWrap = document.getElementById("addNotifyWrap");
+  var notifyEl = document.getElementById("addNotify");
+  var notifyText = document.getElementById("addNotifyText");
+  var notifyHint = document.getElementById("addNotifyHint");
+  var QUOTE_STATUSES = ["pending", "pending_payment"];
+  var RATE_SHEET_TYPES = ["day_trip", "half_day", "all_inclusive_family", "all_inclusive_barkada"];
+  var EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+  // Guest-facing details that go into the "changes to your reservation"
+  // email. Status, staff notes, booked-by and source are internal and left out.
+  var GUEST_FIELDS = [
+    ["stay_type", "Booking", function (v) { return FULL_TYPE_NAMES[v] || TYPE_LABELS[v] || v || ""; }],
+    ["check_in", "Date", function (v) { return v ? fmtDateLong(v) : "To be confirmed"; }],
+    ["adults", "Adults", String],
+    ["senior_count", "Senior citizens / PWD", String],
+    ["children_6_12", "Kids (6–12)", String],
+    ["children_0_5", "Kids (0–5)", String],
+    ["pet_count", "Pets", String],
+    ["dining_cabanas", "Dining cabanas", String],
+    ["lounge_cabanas", "Lounge cabanas", String],
+    ["discount_amount", "Discount", function (v) { return Number(v) > 0 ? peso(v) : "None"; }],
+    ["total_amount", "Total", function (v) { return v === null || v === undefined || v === "" ? "" : peso(v); }],
+    ["guest_name", "Name", String],
+    ["guest_phone", "Phone", String],
+    ["guest_email", "Email", String],
+    ["notes", "Notes", String],
+  ];
+  var FULL_TYPE_NAMES = {
+    day_trip: "Day Trip (Full Day)", half_day: "Half-Day Trip", flash_sale: "Flash Sale Day Trip",
+    all_inclusive_family: "All Inclusive — Family Package", all_inclusive_barkada: "All Inclusive — Barkada Package",
+    corporate: "Corporate Outing", other: "Other / Add-on",
+  };
+  function fmtDateLong(s) {
+    var d = new Date(s + "T00:00:00");
+    return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+  }
+  function cabanaListText(ids) {
+    var labels = ids.map(function (id) { return cabanasById[id] ? cabanasById[id].label : "Unknown cabana"; });
+    labels.sort(function (a, b) { return a.localeCompare(b, undefined, { numeric: true }); });
+    return labels.length ? labels.join(", ") : "None";
+  }
+
+  function uploadList() {
+    var items = [];
+    if (intVal("addSeniors") + intVal("addPwdKids") > 0) items.push("Senior Citizen/PWD ID(s)");
+    if (intVal("addPets") > 0) items.push("pet vaccination card(s)");
+    if (!items.length) return "any documents";
+    return items.length === 1 ? items[0] : items.slice(0, -1).join(", ") + " and " + items[items.length - 1];
+  }
+
+  // A staff-made booking whose quotation hasn't gone out yet (e.g. saved
+  // first without an email, the email added later): saving can send it now.
+  function editQuoteMode() {
+    var r = editingRow;
+    if (!r) return { ok: false };
+    var email = $("addEmail").value.trim(), type = $("addType").value, status = $("addStatus").value;
+    var hasTotal = P.hasRateSheet(type) || $("addTotal").value !== "";
+    if (type === "corporate") hasTotal = Number($("addTotal").value) > 0;
+    return { ok: r.source !== "website" && r.email_guest !== true && EMAIL_RE.test(email) &&
+      QUOTE_STATUSES.indexOf(status) !== -1 && hasTotal, email: email };
+  }
+
+  function updateNotifyState() {
+    notifyWrap.style.display = "flex";
+    var email = $("addEmail").value.trim();
+    if (!editingRow) {
+      // New staff booking: optionally send it to the guest as a quotation —
+      // the same email a website booking gets (amount due, bank details,
+      // pay-by time, and a link to upload payment / Senior IDs / pet cards).
+      var type = $("addType").value, status = $("addStatus").value;
+      var hasTotal = P.hasRateSheet(type) || $("addTotal").value !== "";
+      var why = !EMAIL_RE.test(email) ? "Add the guest's email address to send them the quotation"
+        : type === "corporate" && !(Number($("addTotal").value) > 0) ? "Enter the agreed Total to send this corporate quotation"
+        : QUOTE_STATUSES.indexOf(status) === -1 ? "Only Pending bookings can be sent as a quotation"
+        : RATE_SHEET_TYPES.indexOf(type) === -1 && !hasTotal ? "Enter the Total for this booking type to send a quotation"
+        : "";
+      notifyEl.disabled = !!why;
+      if (why) notifyEl.checked = false;
+      else if (!notifyTouched) notifyEl.checked = true;
+      notifyWrap.classList.toggle("is-disabled", !!why);
+      notifyText.textContent = why || "Send the quotation to " + email + " when I save";
+      notifyHint.hidden = !!why;
+      if (dtMail) setTimeout(function () { dtMail.refresh(); }, 0);
+      notifyHint.textContent = "Same email as a website booking: the amount due shown above" +
+        ", the pay-by time, a Pay now button (GCash, cards, Maya…), and a link for the guest to upload " + uploadList() +
+        ". Unpaid bookings expire automatically after 24 hours.";
+      return;
+    }
+    var qm = editQuoteMode();
+    if (qm.ok) {
+      notifyEl.disabled = false;
+      if (!notifyTouched) notifyEl.checked = true;
+      notifyWrap.classList.remove("is-disabled");
+      notifyText.textContent = "Send the quotation to " + email + " when I save (it hasn't been sent yet)";
+      notifyHint.hidden = false;
+      notifyHint.textContent = "Same email as a website booking: the amount due, the pay-by time and a Pay now button (GCash, cards, Maya…).";
+      if (dtMail) dtMail.refresh();
+      return;
+    }
+    var ok = EMAIL_RE.test(email);
+    // v28: a day-trip guest is always emailed when their cabana changes.
+    notifyHint.hidden = !ok;
+    notifyHint.textContent = "If you change the cabana, the guest is always emailed the new number (even if this is unticked).";
+    notifyEl.disabled = !ok;
+    if (!ok) notifyEl.checked = false;
+    notifyWrap.classList.toggle("is-disabled", !ok);
+    notifyText.textContent = ok
+      ? "Email " + email + " a summary of the changes when I save"
+      : "No guest email on this booking — the guest won't be emailed";
+    if (dtMail) dtMail.refresh();
+  }
+
+
+  // ---------- emails sent for a booking (booking_email_log), newest first ----------
+  var MAIL_KINDS = {
+    guest_quote: "Booking received / quotation", guest_confirmed: "Booking confirmed", guest_changed: "Changes to the reservation",
+    guest_cancelled: "Booking cancelled", guest_expired: "Cancelled — payment not received", pay_reminder: "Payment reminder (before the deadline)",
+    arrival_notice: "Trip day — expecting you (8 AM)", full_pay_reminder: "Full payment reminder (villa, within 14 days)",
+    proof_guest: "Payment proof received", proof_rejected: "Payment proof not verified", payment_received: "Payment receipt",
+    paid_in_full: "Fully paid", balance_due: "Balance reminder", balance_overdue_guest: "Balance overdue",
+    staff_new: "Staff alert — new booking", staff_new_monitor: "Staff alert — new booking", proof_staff: "Staff alert — proof to verify",
+    docs_staff: "Staff alert — IDs / documents", balance_overdue_staff: "Staff alert — balance overdue", staff_expired: "Staff alert — auto-cancelled",
+    overpaid_staff: "Staff alert — overpaid",
+  };
+  function renderEmailLog(fieldId, listId, bookingId) {
+    var field = document.getElementById(fieldId), el = document.getElementById(listId);
+    if (!field || !el) return;
+    field.hidden = !bookingId;
+    if (!bookingId) return;
+    el.innerHTML = '<div class="ml-empty">Loading…</div>';
+    sb.from("booking_email_log").select("kind,recipient,subject,status,error,created_at,sent_at").eq("booking_id", bookingId)
+      .order("created_at", { ascending: false }).limit(100).then(function (res) {
+        if (res.error) { el.innerHTML = '<div class="ml-empty">Couldn\'t load the email log.</div>'; return; }
+        var rows = res.data || [];
+        if (!rows.length) { el.innerHTML = '<div class="ml-empty">No emails sent for this booking yet.</div>'; return; }
+        el.innerHTML = rows.map(function (m) {
+          var base = String(m.kind || "").split(":")[0], staff = /staff/.test(base);
+          var st = m.status === "sent" ? "sent" : m.status === "failed" ? "failed" : "pending";
+          return '<div class="ml-row' + (staff ? " ml-staff" : "") + '"><span class="ml-when">' + esc(fmtDateTime(m.sent_at || m.created_at)) + "</span>" +
+            '<span class="ml-what"><b>' + esc(MAIL_KINDS[base] || base.replace(/_/g, " ")) + "</b><small>to " + esc(m.recipient || "—") +
+            (m.error ? " · " + esc(String(m.error).slice(0, 120)) : "") + "</small></span>" +
+            '<span class="ml-st ' + st + '">' + (st === "sent" ? "Sent" : st === "failed" ? "Failed" : "Sending") + "</span></div>";
+        }).join("");
+      });
+  }
+
+  // Status & Payment box (top of the day-trip form): paid summary + the rule
+  function renderPaySum(r, proofWaiting) {
+    var sumEl = $("addPaySum"), ruleEl = $("addPayRule"); if (!sumEl) return;
+    if (!r || !r.id) {
+      sumEl.innerHTML = '<span class="muted">New booking · starts as <b>Payment Pending</b></span>';
+      ruleEl.innerHTML = "Bookings entered by staff are never cancelled automatically. Walk-in already paid? Enter the amount below — it's recorded when you save.";
+      return;
+    }
+    var total = Number(r.total_amount) || 0, paid = Number(r.amount_paid) || 0, owe = total - paid;
+    var chip = paid >= total - 0.5 && total > 0 ? '<span class="sp-chip paid">Fully paid</span>'
+      : paid > 0 ? '<span class="sp-chip part">Balance ' + esc(peso(owe)) + "</span>"
+      : '<span class="sp-chip none">Not paid</span>';
+    sumEl.innerHTML = "Paid <b>" + esc(peso(paid)) + "</b> of " + esc(peso(total)) + chip;
+    var active = ["pending", "pending_payment", "confirmed"].indexOf(r.status) >= 0;
+    ruleEl.innerHTML = !active ? "" : proofWaiting ? "<b>A payment proof is waiting to be checked</b> — verify it below, or the booking stays Payment Under Review."
+      : owe > 0.5 ? (r.booking_origin === "site_guest" && r.source !== "walk_in"
+          ? (paid > 0
+            ? "Booked online, balance still due — <b>never cancelled automatically</b> (something was paid). Record the balance below once received; it shows under Action needed on the trip day."
+            : "Booked online, nothing paid yet: if still unpaid at <b>5:00 PM on " + esc(fmtDate(r.check_in)) + "</b> it is cancelled automatically and the guest emailed. Record gate payments before 5 PM.")
+          : "Entered by staff — <b>never cancelled automatically</b>. Record the payment below as soon as it's received.")
+      : "Fully paid — nothing to do.";
+  }
+  function recKind(paid, owe, amount) { return paid > 0 ? "balance" : amount >= owe - 0.5 ? "full" : "deposit"; }
+  function setRecBox(r) {
+    var amt = $("addRecAmount"); if (!amt) return;
+    $("addRecMsg").textContent = ""; $("addRecMsg").className = "sp-rec-msg"; $("addRecNote").value = "";
+    $("addRecFile").value = ""; $("addRecFileName").textContent = "Attach screenshot / receipt photo *"; $("addRecFile").parentNode.classList.remove("has");
+    var po = $("addStatusPendingOpt"); if (po) po.textContent = r && r.id ? pendingLabel(r) : "Staff Booked · Unpaid";
+    var co = $("addStatusConfirmedOpt"); if (co) co.textContent = r && r.id && isDownpaid(r) ? "Confirmed · Downpaid (balance due)" : "Confirmed · Paid";
+    var isNew = !r || !r.id;
+    var owe = isNew ? null : (Number(r.total_amount) || 0) - (Number(r.amount_paid) || 0);
+    var show = isNew || (["pending", "pending_payment", "confirmed", "completed"].indexOf(r.status) >= 0 && owe > 0.5) || r.status === "expired";
+    $("addRecBox").hidden = !show;
+    $("addRecBtn").hidden = isNew;
+    $("addRecTitle").firstChild.textContent = isNew ? "Paid now? (walk-ins) " : "Record a payment received ";
+    amt.value = isNew ? "" : owe > 0.5 ? String(Math.round(owe * 100) / 100) : "";
+    $("addRecMethod").value = (isNew ? $("addChannel").value === "walk_in" : r.source === "walk_in") ? "cash" : "transfer";
+  }
+  // v50: a staff-recorded payment always carries its screenshot / receipt photo
+  function recordPayment(row, amount, done) {
+    var paid = Number(row.amount_paid) || 0, owe = (Number(row.total_amount) || 0) - paid;
+    var file = $("addRecFile").files && $("addRecFile").files[0];
+    var fail = function (e) { if (done) done(e); return e; };
+    if (!file) return Promise.resolve(fail({ message: "Attach the payment screenshot or a photo of the receipt." }));
+    return uploadProof(row, file).then(function (path) {
+      return sb.rpc("staff_record_payment_proof", { p_booking_id: row.id, p_amount: amount, p_kind: recKind(paid, owe, amount),
+        p_method: $("addRecMethod").value, p_note: $("addRecNote").value.trim() || null, p_path: path }).then(function (res) {
+        var e = res.error ? (/staff_record_payment_proof/.test(res.error.message) ? { message: "Needs the database update booking-v50-record-payment-with-proof.sql." } : res.error) : null;
+        if (done) done(e);
+        return e;
+      });
+    }, function (e) { return fail({ message: "Couldn't upload the screenshot: " + (e && e.message || e) }); });
+  }
+  $("addRecFile") && $("addRecFile").addEventListener("change", function () {
+    var f = this.files && this.files[0];
+    $("addRecFileName").textContent = f ? "✓ " + f.name : "Attach screenshot / receipt photo *";
+    this.parentNode.classList.toggle("has", !!f);
+  });
+  $("addChannel").addEventListener("change", function () { if (!editingRow && $("addRecMethod")) $("addRecMethod").value = $("addChannel").value === "walk_in" ? "cash" : "transfer"; });
+  $("addRecBtn") && $("addRecBtn").addEventListener("click", function () {
+    var r = editingRow; if (!r) return;
+    var amount = Number($("addRecAmount").value);
+    var msg = $("addRecMsg");
+    if (!(amount > 0)) { msg.className = "sp-rec-msg err"; msg.textContent = "Enter the amount received."; return; }
+    if (!($("addRecFile").files && $("addRecFile").files[0])) { msg.className = "sp-rec-msg err"; msg.textContent = "Attach the payment screenshot or a photo of the receipt."; return; }
+    $("addRecBtn").disabled = true;
+    var revive = r.status === "expired";
+    recordPayment(r, amount, function (err) {
+      $("addRecBtn").disabled = false;
+      if (err) { msg.className = "sp-rec-msg err"; msg.textContent = "Couldn't record: " + err.message; return; }
+      var after = function () {
+        sb.from("booking_requests").select("*, booking_cabanas(cabana_id), booking_villas(villa_id,provisional), booking_payments(method,note,status,amount)").eq("id", r.id).single().then(function (q) {
+          if (q.data) { editingRow = q.data; $("addStatus").value = q.data.status; renderPayExisting(q.data); setRecBox(q.data); }
+          msg.className = "sp-rec-msg ok"; msg.textContent = "✓ " + peso(amount) + " recorded" + (revive ? " and the booking restored to Confirmed" : "") + ".";
+          loadBookings();
+        });
+      };
+      // a booking closed at 5 PM but actually paid at the gate → back to Confirmed
+      if (revive) sb.from("booking_requests").update({ status: "confirmed", expire_reason: null }).eq("id", r.id).then(after); else after();
+    });
+  });
+
+  // Payment section of the edit form: every payment already received (Xendit
+  // online payments are recorded automatically with their channel + invoice),
+  // any open Xendit payment link, then the uploaded proofs / IDs.
+  var KIND_NAMES = { deposit: "50% down payment", full: "full payment", balance: "balance", other: "payment" };
+  function renderPayExisting(r) {
+    payExistingEl.innerHTML = "";
+    var links = r ? proofLinks(r) : [];
+    var payBox = document.createElement("div"); payBox.className = "pay-recv";
+    payExistingEl.appendChild(payBox);
+    var proofBox = document.createElement("div"); proofBox.className = "pay-proofs";
+    payExistingEl.appendChild(proofBox);
+    links.forEach(function (l) {
+      var a = document.createElement("a");
+      a.href = "#"; a.textContent = l.text;
+      a.addEventListener("click", function (e) { e.preventDefault(); openSignedUrl(l.bucket, l.path); });
+      proofBox.appendChild(a);
+    });
+    if (r && r.payment_uploaded_at) {
+      var when = document.createElement("span"); when.className = "muted";
+      when.textContent = "uploaded " + fmtDateTime(r.payment_uploaded_at);
+      proofBox.appendChild(when);
+    }
+    if (!r || !r.id) { payBox.innerHTML = '<span class="muted">No payments yet.</span>'; return; }
+    payBox.innerHTML = '<span class="muted">Checking payments…</span>';
+    var forId = r.id;
+    Promise.all([
+      sb.from("booking_payments").select("*").eq("booking_id", r.id).order("created_at"),
+      sb.from("xendit_invoices").select("kind,amount,status,invoice_url,expires_at,created_at").eq("booking_id", r.id).order("created_at", { ascending: false }),
+    ]).then(function (res) {
+      if (!editingRow || editingRow.id !== forId) return;
+      var pays = (res[0].data || []).filter(function (p) { return p.status !== "rejected"; });
+      var open = (res[1].data || []).filter(function (x) { return x.status === "PENDING" && (!x.expires_at || new Date(x.expires_at) > new Date()); });
+      var html = "";
+      pays.forEach(function (p) {
+        var inv = (String(p.note || "").match(/invoice ([\w-]+)/) || [])[1];
+        var isX = p.method === "xendit";
+        html += '<div class="pay-row' + (p.status === "verified" ? " ok" : " wait") + '">' +
+          '<span class="pay-ico">' + (p.status === "verified" ? "✓" : "…") + "</span>" +
+          (Number(p.amount) > 0 ? "<span><b>" + esc(peso(p.amount)) + "</b> · " + esc(KIND_NAMES[p.kind] || "payment") + " · " + esc(payMethodName(p) || p.method)
+            : "<span><b>Extra proof uploaded</b> · no amount added") +
+          (isX ? ' <span class="pay-tag">paid online · no screenshot needed</span>' : "") +
+          '<br><span class="muted">' + esc(fmtDateTime(p.verified_at || p.created_at)) +
+          (p.status === "verified" ? " · verified" + (p.verified_by && !isX ? " by " + esc(p.verified_by) : "") : " · waiting to be checked") +
+          (inv ? " · Xendit invoice " + esc(inv) : "") + (p.test ? " · TEST MODE" : "") + "</span>" +
+          (p.proof_path ? ' <a href="#" data-proof="' + esc(p.proof_path) + '">View proof</a>' : "") + "</span></div>";
+      });
+      open.forEach(function (x) {
+        html += '<div class="pay-row link"><span class="pay-ico">⇢</span><span>Payment link open: <b>' + esc(peso(x.amount)) + "</b> · " +
+          esc(KIND_NAMES[x.kind] || "payment") + ' <span class="muted">· expires ' + esc(fmtDateTime(x.expires_at)) + "</span></span></div>";
+      });
+      var total = Number(r.total_amount) || 0, paid = Number(r.amount_paid) || 0;
+      renderPaySum(r, pays.some(function (p) { return p.status === "pending"; }));
+      setRecBox(r);
+      if (pays.length || open.length) {
+        // the paid / balance summary is shown at the top of the Status & Payment box
+      } else html = '<span class="muted">No payments yet — no online payment and no proof uploaded.</span>';
+      payBox.innerHTML = html;
+      Array.prototype.forEach.call(payBox.querySelectorAll("a[data-proof]"), function (a) {
+        a.addEventListener("click", function (e) { e.preventDefault(); openSignedUrl("payment-proofs", a.getAttribute("data-proof")); });
+      });
+    }, function () { payBox.innerHTML = '<span class="muted">Couldn\'t load payments.</span>'; });
+  }
+
+  // "Email to the guest" panel (staff-email.js): template + editable opening
+  // message + live preview of the exact email, next to the form.
+  var dtMail = null, notifyTouched = false;
+  function mailPanel() {
+    if (dtMail || !window.VBREmail) return dtMail;
+    dtMail = window.VBREmail.create({
+      root: document.getElementById("addMail"), notifyEl: notifyEl, hintEl: notifyHint,
+      mode: function () { return editingRow && !(editQuoteMode().ok && notifyEl.checked) ? "change" : "quote"; },
+      overnight: function () { return false; },
+      request: function () {
+        var vals = formValues();
+        Object.keys(vals).forEach(function (k) { if (vals[k] === undefined) delete vals[k]; });
+        if (!editingRow) return { draft: vals, unit_ids: modalCabanaIds.slice() };
+        var r = editingRow, patch = {};
+        Object.keys(vals).forEach(function (k) { if (k !== "guest_name" && k !== "booked_by" && !sameValue(vals[k], r[k])) patch[k] = vals[k]; });
+        var before = (r.booking_cabanas || []).map(function (bc) { return bc.cabana_id; });
+        return { booking_id: r.id, draft: vals, unit_ids: modalCabanaIds.slice(), changes: guestChanges(r, patch, before, modalCabanaIds.slice()) };
+      },
+    });
+    notifyEl.addEventListener("click", function () { notifyTouched = true; });
+    addForm.addEventListener("input", function () { if (dtMail) dtMail.refresh(); });
+    addForm.addEventListener("change", function () { if (dtMail) dtMail.refresh(); });
+    return dtMail;
+  }
+
+  var editingRow = null;      // null = adding a new booking
+  var modalCabanaIds = [];    // cabana ids currently picked on the map
+
+  function $(id) { return document.getElementById(id); }
+  function intVal(id) { return parseInt($(id).value || "0", 10) || 0; }
+
+  // Which cabanas are already taken on a date, worked out from the bookings
+  // already loaded in the dashboard (staff can see every booking, so this
+  // also says who has it). The booking being edited never blocks itself.
+  function holdsForDate(dateStr) {
+    var held = new Set(), info = {};
+    if (!dateStr) return { held: held, info: info };
+    allRows.forEach(function (r) {
+      if (r.check_in !== dateStr || releasesCabanas(r.status)) return;
+      if (editingRow && r.id === editingRow.id) return;
+      (r.booking_cabanas || []).forEach(function (bc) {
+        held.add(bc.cabana_id);
+        info[bc.cabana_id] = "booked by " + (r.guest_name || "a guest") + (r.order_code ? " (" + r.order_code + ")" : "");
+      });
+    });
+    var bl = blocksForDate(dateStr);
+    bl.set.forEach(function (id) { held.add(id); info[id] = bl.info[id]; });
+    return { held: held, info: info, blocked: bl.set, blockedInfo: bl.info };
+  }
+
+  function renderModalSelected() {
+    renderModalBill();
+    addSelectedEl.innerHTML = "";
+    if (!modalCabanaIds.length) {
+      addSelectedEl.innerHTML = '<span class="muted">No cabana numbers assigned yet (optional).</span>';
+      return;
+    }
+    var label = document.createElement("strong");
+    label.textContent = "Assigned (" + modalCabanaIds.length + "): ";
+    addSelectedEl.appendChild(label);
+    addSelectedEl.appendChild(document.createTextNode(cabanaListText(modalCabanaIds)));
+  }
+
+  // v29: cabana numbers are picked from a list (no map); the counts above
+  // are what's booked and priced.
+  function assignedCount(kind) {
+    return modalCabanaIds.filter(function (id) { return cabanasById[id] && cabKind(cabanasById[id]) === kind; }).length;
+  }
+  function renderModalMap() {
+    var dateStr = addDateEl.value;
+    var h = holdsForDate(dateStr);
+    // If the date changed and a picked cabana is now taken, drop it. A
+    // booking's own cabana that was blocked after it was booked stays put.
+    var ownBlocked = editingRow && dateStr === editingRow.check_in
+      ? (editingRow.booking_cabanas || []).map(function (bc) { return bc.cabana_id; }).filter(function (id) { return h.blocked.has(id); })
+      : [];
+    var dropped = modalCabanaIds.filter(function (id) { return h.held.has(id) && ownBlocked.indexOf(id) === -1; });
+    if (dropped.length) modalCabanaIds = modalCabanaIds.filter(function (id) { return dropped.indexOf(id) === -1; });
+    var free = cabanasFreeOn(dateStr, editingRow && editingRow.id);
+    var leftEl = $("addCabanaLeft");
+    if (leftEl) {
+      leftEl.textContent = free
+        ? "Dining " + Math.max(free.dining, 0) + " of " + free.stock.dining + " · Lounge " + Math.max(free.lounge, 0) + " of " + free.stock.lounge
+        : "Pick a date";
+      var over = free && (intVal("addDining") > free.dining || intVal("addLounge") > free.lounge);
+      leftEl.style.color = over ? "#9b2c2c" : "";
+      if (over) leftEl.textContent += " — over capacity";
+    }
+    addMapStatus.textContent = !dateStr ? "Pick a date to see which cabanas are free that day."
+      : dropped.length ? dropped.length + " assigned cabana(s) are taken on this date and were removed — pick another."
+      : ownBlocked.length ? "Heads-up: " + ownBlocked.map(cabLabel).join(", ") + " is now blocked on this date. Assign another cabana."
+      : "Click cabanas on the map to assign them · taken and blocked cabanas can't be picked. Hover to see who has one.";
+    addMapEl.innerHTML = "";
+    if (!cabanasList.length) { addMapEl.innerHTML = '<span class="muted">Cabana list couldn\'t load.</span>'; renderModalSelected(); return; }
+    // v34: pick numbers on the resort's cabana map (internal records)
+    window.VBRCabanaMap.render(addMapEl, {
+      cabanas: cabanasList,
+      heldSet: h.held,
+      heldInfo: h.info,
+      blockedSet: h.blocked,
+      blockedInfo: h.blockedInfo,
+      selectedIds: modalCabanaIds,
+      crop: { top: 0.33, bottom: 0.56 },
+      onSelect: function (c) {
+        var i = modalCabanaIds.indexOf(c.id);
+        if (i >= 0) modalCabanaIds.splice(i, 1);
+        else {
+          modalCabanaIds.push(c.id);
+          var k = cabKind(c), field = k === "lounge" ? "addLounge" : "addDining";
+          if (assignedCount(k) > intVal(field)) $(field).value = assignedCount(k); // more assigned than booked: count up
+        }
+        renderModalMap();
+      },
+    });
+    renderModalSelected();
+  }
+
+  // ---------- pricing (same calculation as the public booking form) ----------
+  var P = window.VBRPricing;
+  var billEl = $("addBill");
+  var manualTotalWrap = $("addManualTotalWrap");
+  var discTypeEl = $("addDiscountType"), discValueEl = $("addDiscountValue"), discReasonEl = $("addDiscountReason");
+  var openPriceSig = null; // pricing inputs when an existing booking was opened
+
+  function priceSig() {
+    return [$("addType").value, intVal("addAdults"), intVal("addKids"), intVal("addKids05"), intVal("addSeniors"), intVal("addPwdKids"), intVal("addPets"),
+      intVal("addDining"), intVal("addLounge"), discTypeEl.value, discValueEl.value, $("addTotal").value].join("|");
+  }
+
+  // Everything the booking will be saved with: the rate-sheet bill, the
+  // discount and the total. For an existing booking whose pricing inputs
+  // haven't been touched, the saved total is kept as-is (older bookings were
+  // priced by hand) — change anything that affects price and it's recalculated.
+  // Quick discount presets for day trips (Reservations' usual promos)
+  var DISC_PRESETS = {
+    w_dining: { reason: "Promo — 1 Dining Cabana waived", need: "Add a Dining cabana first — this waives one Dining cabana.",
+      amount: function (b) { var l = (b.cabanaLines || []).filter(function (x) { return x.kind === "dining"; })[0]; return l ? l.rate : null; } },
+    w_lounge: { reason: "Promo — 1 Lounge Cabana waived", need: "Add a Lounge cabana first — this waives one Lounge cabana.",
+      amount: function (b) { var l = (b.cabanaLines || []).filter(function (x) { return x.kind === "lounge"; })[0]; return l ? l.rate : null; } },
+    w_cabanas: { reason: "Promo — cabana(s) waived", need: "There's no cabana to waive.",
+      amount: function (b) { return b.cabanaTotal > 0 ? b.cabanaTotal : null; } },
+    w_pax: { reason: "Promo — free entrance", need: "Enter how many guests get free entrance (at most the party size).", value: "Guests free",
+      amount: function (b, n) {
+        n = Math.floor(Number(n) || 0);
+        if (n <= 0 || b.isPackage || !b.rate) return null;
+        // waive the people's own fees, adults first, then seniors, then kids 6–12
+        var heads = [], i;
+        for (i = 0; i < b.regularAdults; i++) heads.push(b.rate.adult);
+        for (i = 0; i < b.seniors; i++) heads.push(b.seniorRate);
+        for (i = 0; i < b.kids612 - (b.pwdKids || 0); i++) heads.push(b.rate.child612);
+        for (i = 0; i < (b.pwdKids || 0); i++) heads.push(b.pwdKidRate);
+        if (n > heads.length) return null;
+        return heads.slice(0, n).reduce(function (x, y) { return x + y; }, 0);
+      } },
+    w_pets: { reason: "Pet fee waived", need: "There's no pet fee on this booking.",
+      amount: function (b) { var c = b.isPackage ? b.extraPetCost : b.petCost; return c > 0 ? c : null; } },
+  };
+  var lastAutoReason = "";
+  function modalPricing() {
+    var type = $("addType").value;
+    var bill = P.compute({
+      type: type, adults: intVal("addAdults"), kids612: intVal("addKids"), kids05: intVal("addKids05"),
+      seniors: intVal("addSeniors"), pwdKids: intVal("addPwdKids"), pets: intVal("addPets"),
+      dining: intVal("addDining"), lounge: intVal("addLounge"),
+    });
+    var out = { bill: bill, rated: bill.rated, discountType: null, discountValue: null, discount: 0, total: null, kept: false, error: null };
+    if (bill.rated) {
+      var kind = discTypeEl.value;
+      var val = Number(discValueEl.value) || 0;
+      // quick presets → a peso amount (saved as an "amount" discount with its reason)
+      var pre = DISC_PRESETS[kind];
+      if (pre) {
+        var amt = pre.amount(bill, val);
+        if (amt == null) { out.error = pre.need; amt = 0; }
+        kind = "amount"; val = P.r2(Math.min(amt, bill.total));
+        out.preset = discTypeEl.value; out.presetAmount = val;
+      }
+      if (kind && val > 0) {
+        if (kind === "percent" && val > 100) out.error = "A percentage discount can't be more than 100%.";
+        if (kind === "amount" && val > bill.total) out.error = "The discount is more than the total.";
+        out.discountType = kind; out.discountValue = val;
+        out.discount = P.discountAmount(bill.total, kind, val);
+      }
+      out.total = P.r2(bill.total - out.discount);
+    } else {
+      out.total = $("addTotal").value === "" ? null : Number($("addTotal").value);
+    }
+    out.calculated = out.total;
+    var saved = editingRow ? editingRow.total_amount : null;
+    if (editingRow && openPriceSig !== null && priceSig() === openPriceSig &&
+        (saved == null ? out.total != null : out.total == null || Math.abs(Number(saved) - out.total) > 0.5)) {
+      out.kept = true;
+      out.total = saved == null ? null : Number(saved);
+    }
+    return out;
+  }
+
+  function billRow(label, amount, cls) {
+    return '<div class="bill-row' + (cls ? " " + cls : "") + '"><span>' + label + "</span><span>" + amount + "</span></div>";
+  }
+
+  // The rate-sheet lines for a Day Trip bill (shared by the form and the
+  // Breakdown view): "3 adults × ₱1,250", each cabana, package extras.
+  function dayTripRows(b) {
+    var L = [];
+    if (b.isPackage) {
+      L.push(billRow("Package (up to " + b.includedPax + " guests, " + b.includedCabanas + " cabana)", peso(b.base)));
+      if (b.extraPax) L.push(billRow(b.extraPax + " extra guest" + (b.extraPax === 1 ? "" : "s"), peso(b.extraPaxCost)));
+      if (b.pets) L.push(billRow(b.pets + " pet" + (b.pets === 1 ? "" : "s"), peso(b.extraPetCost)));
+      if (b.extraCabanas) L.push(billRow(b.extraCabanas + " extra cabana" + (b.extraCabanas === 1 ? "" : "s"), peso(b.extraCabanaCost)));
+    } else {
+      if (b.regularAdults) L.push(billRow(b.regularAdults + " adult" + (b.regularAdults === 1 ? "" : "s") + " × " + peso(b.rate.adult), peso(b.regularAdults * b.rate.adult)));
+      if (b.seniors) L.push(billRow(b.seniors + " senior/PWD × " + peso(b.seniorRate) + " <em>(20% off)</em>", peso(b.seniors * b.seniorRate)));
+      // PWD kids (6–12) get their own line at the 20%-off, VAT-exempt rate (the total already used it)
+      var regK612 = b.kids612 - (b.pwdKids || 0);
+      if (regK612 > 0) L.push(billRow(regK612 + " child" + (regK612 === 1 ? "" : "ren") + " (6–12) × " + peso(b.rate.child612), peso(regK612 * b.rate.child612)));
+      if (b.pwdKids) L.push(billRow(b.pwdKids + " PWD child" + (b.pwdKids === 1 ? "" : "ren") + " (6–12) × " + peso(b.pwdKidRate) + " <em>(VAT-exempt, 20% off)</em>", peso(b.pwdKids * b.pwdKidRate)));
+      if (b.kids05) L.push(billRow(b.kids05 + " child" + (b.kids05 === 1 ? "" : "ren") + " (0–5)", "Free"));
+      if (b.pets) L.push(billRow(b.pets + " pet" + (b.pets === 1 ? "" : "s") + " × " + peso(b.rate.pet), peso(b.petCost)));
+      (b.cabanaLines || []).forEach(function (l) { L.push(billRow(l.qty + " × " + l.label + (l.qty === 1 ? "" : "s") + " × " + peso(l.rate), peso(l.amount))); });
+    }
+    return L;
+  }
+
+  function renderModalBill() {
+    if (window.VBRRenderPartyLine) window.VBRRenderPartyLine();
+    if (!billEl) return;
+    var pr = modalPricing(), b = pr.bill;
+    var rated = b.rated;
+    manualTotalWrap.hidden = rated;
+    discTypeEl.disabled = !rated;
+    if (!rated) discTypeEl.value = "";
+    var dk = discTypeEl.value, dp = DISC_PRESETS[dk];
+    discReasonEl.disabled = !rated || !dk;
+    discValueEl.disabled = !rated || !dk || (dp && !dp.value);
+    $("addDiscountValueLabel").textContent = dk === "percent" ? "Percent (%)" : dk === "amount" ? "Amount (₱)" : dp && dp.value ? dp.value : dp ? "Amount (auto)" : "Value";
+    if (dp && !dp.value) discValueEl.value = pr.presetAmount != null ? pr.presetAmount : "";
+    // fill the guest-facing reason for a preset (unless staff typed their own)
+    if (dp && (!discReasonEl.value.trim() || discReasonEl.value === lastAutoReason)) { discReasonEl.value = dp.reason; lastAutoReason = dp.reason; }
+    if (!rated) {
+      billEl.innerHTML = '<div class="bill-lines">' + billRow(esc(FULL_TYPE_NAMES[b.type] || b.type), "Quoted by hand") + "</div>" +
+        '<div class="bill-total"><span>Total</span><span>' + (pr.total == null ? "—" : peso(pr.total)) + "</span></div>";
+      return;
+    }
+    var L = dayTripRows(b);
+    if (pr.discount > 0) {
+      L.push(billRow("Discount" + (pr.discountType === "percent" ? " (" + pr.discountValue + "%)" : "") +
+        (discReasonEl.value.trim() ? " — " + esc(discReasonEl.value.trim()) : ""), "−" + peso(pr.discount), "discount"));
+    }
+    var warn = b.cabanaCount && b.totalCapacity < b.totalGuests
+      ? '<p class="bill-warning">' + (b.cabanaCount === 1 ? "That cabana seats" : "Those cabanas seat") + " up to " + b.totalCapacity + ", and the party is " + b.totalGuests + ".</p>" : "";
+    var note = pr.kept
+      ? '<p class="bill-note">' + (pr.total == null ? "No saved total" : "Saved total kept: " + peso(pr.total)) + " (rate sheet gives " + peso(pr.calculated) + ")." +
+        ' <button type="button" class="btn-sm ghost" id="useCalcTotal">Use rate sheet total</button></p>'
+      : "";
+    billEl.innerHTML = '<div class="bill-lines">' + (L.join("") || billRow("Add the party size and cabana(s)", "—")) + "</div>" + warn +
+      '<div class="bill-total"><span>Total</span><span>' + (pr.total == null ? "—" : peso(pr.total)) + "</span></div>" + note +
+      (pr.error ? '<p class="bill-note" style="color:#9b2c2c;">' + esc(pr.error) + "</p>" : "");
+    var useBtn = $("useCalcTotal");
+    if (useBtn) useBtn.addEventListener("click", function () { openPriceSig = null; renderModalBill(); });
+  }
+
+  // ---- party box: −/+ steppers, Senior/PWD kept within Adults (PWD kids within Kids 6–12) ----
+  function setInt(id, v) { $(id).value = Math.max(0, v); }
+  function syncParty(changed) {
+    var a = intVal("addAdults"), sr = intVal("addSeniors"), k = intVal("addKids"), pk = intVal("addPwdKids");
+    // Senior/PWD are counted within Adults: raising seniors past adults adds adults; lowering adults trims seniors
+    if (sr > a) { if (changed === "addSeniors") setInt("addAdults", sr); else setInt("addSeniors", a); }
+    if (pk > k) { if (changed === "addPwdKids") setInt("addKids", pk); else setInt("addPwdKids", k); }
+    renderPartyLine();
+  }
+  function plural(n, one, many) { return n + " " + (n === 1 ? one : many); }
+  function renderPartyLine() {
+    var nc = $("addNoCabanaWrap"), cc = $("addCabanaCounts");
+    if (nc && cc) {
+      nc.style.display = cc.style.display === "none" || !/^(day_trip|half_day)$/.test($("addType").value) ? "none" : "";
+      var on = $("addNoCabana").checked, why = (document.querySelector('input[name="addNoCabWhy"]:checked') || {}).value;
+      $("addNoCabanaWhy").hidden = !on;
+      $("addNoCabRef").hidden = !on || why !== "addon";
+      $("addNoCabOther").hidden = !on || why !== "other";
+    }
+    var el = $("addPartyLine"); if (!el) return;
+    var a = intVal("addAdults"), sr = intVal("addSeniors"), k = intVal("addKids"), pk = intVal("addPwdKids"), b = intVal("addKids05");
+    var total = a + k + b, bits = [];
+    if (a) bits.push(plural(a, "adult", "adults") + (sr ? sr === a ? (a === 1 ? " — Senior/PWD" : " — all Senior/PWD") : " (" + sr + " Senior/PWD, " + (a - sr) + " regular)" : ""));
+    if (k) bits.push(plural(k, "kid 6–12", "kids 6–12") + (pk ? " (" + pk + " PWD)" : ""));
+    if (b) bits.push(plural(b, "kid 0–5", "kids 0–5") + " (free)");
+    var ids = sr + pk;
+    el.innerHTML = total ? "<b>" + plural(total, "guest", "guests") + "</b> · " + esc(bits.join(" · ")) +
+      (ids ? ' <span class="sr-tag">' + plural(ids, "Senior/PWD ID", "Senior/PWD IDs") + " needed · discount on their meals</span>" : "")
+      : "Add at least 1 guest.";
+    $("addParty").querySelectorAll(".stepper").forEach(function (w) {
+      var i = w.querySelector("input"), v = parseInt(i.value || "0", 10) || 0;
+      w.firstChild.disabled = v <= (+i.min || 0);
+      w.lastChild.disabled = i.max !== "" && v >= +i.max;
+    });
+  }
+  window.VBRRenderPartyLine = renderPartyLine;
+  ["addNoCabana"].concat([].slice.call(document.querySelectorAll('input[name="addNoCabWhy"]'))).forEach(function (el) {
+    (typeof el === "string" ? $(el) : el).addEventListener("change", renderPartyLine);
+  });
+  document.querySelectorAll("#addParty input[data-stepper]").forEach(function (inp) {
+    var w = document.createElement("div"); w.className = "stepper";
+    inp.parentNode.insertBefore(w, inp);
+    var minus = document.createElement("button"), plus = document.createElement("button");
+    minus.type = plus.type = "button"; minus.textContent = "−"; plus.textContent = "+";
+    minus.setAttribute("aria-label", "Less"); plus.setAttribute("aria-label", "More");
+    w.appendChild(minus); w.appendChild(inp); w.appendChild(plus);
+    function bump(d) {
+      var v = (parseInt(inp.value || "0", 10) || 0) + d;
+      if (v < (+inp.min || 0)) return;
+      if (inp.max !== "" && v > +inp.max) return;
+      inp.value = v;
+      inp.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    minus.addEventListener("click", function () { bump(-1); });
+    plus.addEventListener("click", function () { bump(1); });
+  });
+  ["addAdults", "addSeniors", "addKids", "addPwdKids", "addKids05", "addPets"].forEach(function (id) {
+    $(id).addEventListener("input", function () { syncParty(id); }, true);
+  });
+  $("addParty").querySelectorAll("[data-sr]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      if (b.getAttribute("data-sr") === "all") { if (!intVal("addAdults")) setInt("addAdults", 1); setInt("addSeniors", intVal("addAdults")); }
+      else setInt("addSeniors", 0);
+      $("addSeniors").dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  });
+
+  ["addAdults", "addKids", "addKids05", "addSeniors", "addPwdKids", "addPets", "addTotal", "addDiscountValue", "addDiscountReason"].forEach(function (id) {
+    $(id).addEventListener("input", renderModalBill);
+  });
+  ["addDining", "addLounge"].forEach(function (id) { $(id).addEventListener("input", renderModalMap); });
+  ["addType", "addDiscountType"].forEach(function (id) { $(id).addEventListener("change", renderModalBill); });
+  // Package "Other" = other charges (sunscreen, items, fees): a new one starts with no guests,
+  // so it isn't counted as an extra adult on the Day Trip calendar.
+  $("addType").addEventListener("change", function () {
+    if (editingRow || $("addType").value !== "other") return;
+    ["addAdults", "addSeniors", "addKids", "addPwdKids", "addKids05"].forEach(function (id) { setInt(id, 0); });
+    if (window.VBRRenderPartyLine) window.VBRRenderPartyLine();
+    renderModalBill();
+  });
+
+  // ---------- "How it got this status" — shown under Status in a booking ----------
+  // From the activity log: the latest status change and who made it (a staff
+  // member on the dashboard, Cloudbeds through the sync, or the system — online
+  // payment, unpaid deadline…), plus the cancel reason when staff gave one.
+  var EXPIRE_WHY = {
+    trip_day_unpaid: "cancelled automatically — not paid by 5 PM on the day of the trip",
+    balance_unpaid: "cancelled automatically — the balance wasn't paid in time",
+    manual_unpaid: "cancelled for non-payment",
+  };
+  function renderStatusStory(r, selectId) {
+    var sel = document.getElementById(selectId);
+    if (!sel) return;
+    var box = document.getElementById(selectId + "Why");
+    if (!box) {
+      box = document.createElement("p");
+      box.id = selectId + "Why";
+      box.className = "modal-hint";
+      box.style.margin = "6px 0 0";
+      sel.parentNode.insertBefore(box, sel.nextSibling);
+    }
+    if (!r || !r.id) { box.hidden = true; return; }
+    box.hidden = false;
+    box.textContent = "Checking how it got this status…";
+    var want = r.id;
+    Promise.all([
+      sb.from("booking_audit_log").select("logged_at,action,changed_by_email,changes").eq("booking_id", r.id).order("logged_at", { ascending: false }).limit(100),
+      sb.from("booking_payments").select("method,status,verified_at,amount").eq("booking_id", r.id).eq("status", "verified").order("verified_at", { ascending: false }).limit(1),
+    ]).then(function (res) {
+      if (box.getAttribute("data-for") && box.getAttribute("data-for") !== want) return;
+      var log = (res[0] && res[0].data) || [], pay = (res[1] && res[1].data && res[1].data[0]) || null;
+      var ch = log.filter(function (e) { return e.action === "update" && e.changes && e.changes.status; })[0];
+      var made = log.filter(function (e) { return e.action === "insert"; })[0];
+      var cur = statusLabel(r), html;
+      var asLabel = function (st) { return statusLabel(Object.assign({}, r, { status: st, cb_info: null })); };
+      if (!ch) {
+        var how = r.cb_owned || originOf(r) === "cloudbeds" ? "came in from Cloudbeds"
+          : originOf(r) === "site_guest" ? "booked by the guest on the website"
+          : r.booked_by ? "entered by " + r.booked_by : made && made.changed_by_email ? "entered by " + staffLabelForLogEmail(made.changed_by_email) : "created";
+        html = "<b>" + esc(cur) + "</b> since the booking was made (" + esc(fmtDateTime(r.created_at)) + ") — " + esc(how) + ".";
+      } else {
+        var who = ch.changed_by_email || "", nw = ch.changes.status.new, old = ch.changes.status.old, why;
+        if (who === "Cloudbeds") {
+          why = "changed in Cloudbeds" + (r.cb_info && r.cb_info.status ? " (Cloudbeds: " + (CB_STATUS[r.cb_info.status] || r.cb_info.status) + ")" : "") + ", synced here";
+        } else if (who && who.indexOf("@") > 0) {
+          why = "changed by " + staffLabelForLogEmail(who) + " on the dashboard";
+          if (nw === "declined" && r.cancel_reason) why += " — " + (CANCEL_REASONS[r.cancel_reason] || r.cancel_reason) + (r.cancel_note ? ": “" + r.cancel_note + "”" : "") + (r.cb_reservation_id ? (r.cancel_notify ? "; guest emailed by Cloudbeds" : "; guest not emailed") : "");
+          else if (nw === "expired") why += " — " + (EXPIRE_WHY[r.expire_reason] || "cancelled for non-payment");
+        } else if (who) {
+          why = "changed by “" + who + "”";
+        } else if (nw === "expired") {
+          why = EXPIRE_WHY[r.expire_reason] || "cancelled automatically — not paid by the payment deadline";
+        } else if (nw === "confirmed" && pay) {
+          why = pay.method === "xendit" ? "confirmed automatically when the guest paid online (" + peso(pay.amount) + ")" : "confirmed when the payment of " + peso(pay.amount) + " was verified";
+        } else if (nw === "pending_payment") {
+          why = "the guest uploaded a proof of payment";
+        } else if (nw === "completed") {
+          why = "marked completed automatically after the stay";
+        } else {
+          why = "changed automatically by the system";
+        }
+        html = "<b>" + esc(cur) + "</b> since " + esc(fmtDateTime(ch.logged_at)) + " — from " + esc(asLabel(old)) + ", " + esc(why) + ".";
+      }
+      // the select may show an unsaved choice: say what's saved
+      box.innerHTML = html + ' <a href="#" class="status-why-log">Full history</a>';
+      box.querySelector(".status-why-log").addEventListener("click", function (e) {
+        e.preventDefault();
+        openLogModal(r.id, (r.guest_name || "This booking") + (r.order_code ? " (" + r.order_code + ")" : ""));
+      });
+    }, function () { box.textContent = ""; box.hidden = true; });
+    box.setAttribute("data-for", want);
+  }
+
+  function openModal(row) {
+    addForm.reset();
+    addError.style.display = "none";
+    editingRow = row && row.id ? row : null;
+    if (editingRow) {
+      var r = editingRow;
+      modalTitle.textContent = "Edit Booking" + (r.order_code ? " · " + r.order_code : "");
+      modalSub.textContent = "Changes are saved to the activity log under your name.";
+      saveBookingBtn.textContent = "Save Changes";
+      staffNotesField.style.display = "block";
+      paymentField.style.display = "block";
+      notifyEl.checked = true;
+      renderPayExisting(r);
+      renderEmailLog("addMailLogField", "addMailLog", r.id);
+      $("addChannel").value = r.source || "other";
+      $("addType").value = r.stay_type || "day_trip";
+      $("addStatus").value = r.status || "pending";
+      $("addStatus").disabled = false;
+      $("addStatusLock").hidden = true;
+      $("addName").value = r.guest_name || "";
+      // v62: staff can correct the guest name (logged); not on a Cloudbeds reservation
+      $("addName").readOnly = !!r.cb_reservation_id;
+      $("addNameLock").hidden = !r.cb_reservation_id;
+      $("addBookedBy").value = r.booked_by || "—";
+      $("addPhone").value = r.guest_phone || "";
+      $("addEmail").value = r.guest_email || "";
+      addDateEl.value = r.check_in || "";
+      $("addAdults").value = r.adults || 0;
+      $("addKids").value = r.children_6_12 || 0;
+      $("addKids05").value = r.children_0_5 || 0;
+      discTypeEl.value = r.discount_type || "";
+      discValueEl.value = r.discount_value != null ? r.discount_value : "";
+      discReasonEl.value = r.discount_reason || "";
+      $("addSeniors").value = r.senior_count || 0;
+      if ($("addPwdKids")) $("addPwdKids").value = r.pwd_kid_count || 0;
+      $("addPets").value = r.pet_count || 0;
+      $("addTotal").value = r.total_amount != null ? r.total_amount : "";
+      $("addNotes").value = r.notes || "";
+      $("addStaffNotes").value = r.staff_notes || "";
+      if ($("addEmailCabNo")) $("addEmailCabNo").checked = !!r.email_cabana_numbers;
+      modalCabanaIds = (r.booking_cabanas || []).map(function (bc) { return bc.cabana_id; });
+      var n0 = countsOf(r);
+      $("addDining").value = n0.dining;
+      $("addLounge").value = n0.lounge;
+      openPriceSig = priceSig();
+    } else {
+      openPriceSig = null;
+      modalTitle.textContent = "Add a Booking";
+      modalSub.textContent = "For a request that came in outside the website — Messenger, phone, walk-in, etc.";
+      saveBookingBtn.textContent = "Save Booking";
+      staffNotesField.style.display = "none";
+      renderEmailLog("addMailLogField", "addMailLog", null);
+      renderPaySum(null);
+      setRecBox(null);
+      paymentField.style.display = "none";
+      // A new booking always starts at the first step, like creating one in
+      // Cloudbeds; payment / confirmation move it on from there.
+      $("addStatus").value = "pending";
+      $("addStatus").disabled = true;
+      $("addStatusLock").hidden = false;
+      $("addName").readOnly = false;
+      $("addNameLock").hidden = true;
+      $("addBookedBy").value = currentStaffName || "";
+      notifyEl.checked = false;
+      modalCabanaIds = [];
+      if ($("addEmailCabNo")) $("addEmailCabNo").checked = false;
+    }
+    notifyTouched = false;
+    renderModalMap();
+    updateNotifyState();
+    var mp = mailPanel();
+    if (mp) mp.reset();
+    renderStatusStory(editingRow, "addStatus");
+    addModalBackdrop.classList.add("open");
+  }
+  function closeModal() {
+    addModalBackdrop.classList.remove("open");
+    addForm.reset();
+    editingRow = null;
+    modalCabanaIds = [];
+  }
+
+  addBtn.addEventListener("click", function () { openModal(null); });
+  cancelAddBtn.addEventListener("click", closeModal);
+  addModalBackdrop.addEventListener("click", function (e) { if (e.target === addModalBackdrop) closeModal(); });
+  addDateEl.addEventListener("change", renderModalMap);
+  ["addEmail", "addTotal", "addSeniors", "addPets"].forEach(function (id) { $(id).addEventListener("input", updateNotifyState); });
+  ["addType", "addStatus"].forEach(function (id) { $(id).addEventListener("change", updateNotifyState); });
+
+  function formValues() {
+    var type = $("addType").value;
+    var pr = modalPricing();
+    var b = pr.bill;
+    return {
+      source: $("addChannel").value,
+      stay_type: type,
+      stay_type_label: TYPE_LABELS[type],
+      status: $("addStatus").value,
+      guest_name: $("addName").value.trim(),
+      booked_by: currentStaffName || null,
+      guest_phone: $("addPhone").value.trim() || null,
+      guest_email: $("addEmail").value.trim() || null,
+      check_in: addDateEl.value || null,
+      adults: intVal("addAdults"),
+      children_6_12: intVal("addKids"),
+      senior_count: intVal("addSeniors"),
+      pwd_kid_count: intVal("addPwdKids"),
+      pet_count: intVal("addPets"),
+      children_0_5: intVal("addKids05"),
+      dining_cabanas: intVal("addDining"),
+      lounge_cabanas: intVal("addLounge"),
+      total_amount: pr.total,
+      subtotal_people: b.rated && !pr.kept ? P.r2(b.subtotalPeople) : undefined,
+      cabana_total: b.rated && !pr.kept ? P.r2(b.isPackage ? b.extraCabanaCost : b.cabanaTotal) : undefined,
+      senior_discount: b.rated && !pr.kept ? P.r2(b.seniorDiscount) : undefined,
+      discount_type: pr.discountType,
+      discount_value: pr.discountType ? pr.discountValue : null,
+      discount_amount: pr.discount,
+      discount_reason: pr.discountType ? (discReasonEl.value.trim() || null) : null,
+      notes: $("addNotes").value.trim() || null,
+      staff_notes: $("addStaffNotes").value.trim() || null,
+      // cabana numbers are internal; shown in guest emails only when ticked (v33)
+      email_cabana_numbers: !!($("addEmailCabNo") && $("addEmailCabNo").checked),
+    };
+  }
+
+  function showFormError(msg) {
+    addError.textContent = msg;
+    addError.style.display = "block";
+    saveBookingBtn.disabled = false;
+  }
+
+  function sameValue(a, b) {
+    var empty = function (v) { return v === null || v === undefined || v === ""; };
+    if (empty(a) && empty(b)) return true;
+    // an empty count and 0 are the same (older bookings left some counts blank)
+    if ((empty(a) && b === 0) || (a === 0 && empty(b))) return true;
+    if (typeof a === "number" || typeof b === "number") return Number(a) === Number(b);
+    return String(a) === String(b);
+  }
+
+  function syncCabanas(bookingId, before, after) {
+    var toAdd = after.filter(function (id) { return before.indexOf(id) === -1; });
+    var toRemove = before.filter(function (id) { return after.indexOf(id) === -1; });
+    var jobs = [];
+    if (toAdd.length) {
+      jobs.push(sb.from("booking_cabanas").insert(toAdd.map(function (id) { return { booking_id: bookingId, cabana_id: id }; })));
+    }
+    if (toRemove.length) {
+      jobs.push(sb.from("booking_cabanas").delete().eq("booking_id", bookingId).in("cabana_id", toRemove));
+    }
+    return Promise.all(jobs).then(function (results) {
+      var err = results.filter(function (r) { return r && r.error; })[0];
+      if (err) throw err.error;
+    });
+  }
+
+  // Staff-uploaded proofs go under staff/ — the email function treats those as
+  // already verified (no "please verify" alert to the team).
+  function attachProof(bookingId, path, portionEl) {
+    return sb.rpc("staff_attach_proof", { p_booking_id: bookingId, p_path: path, p_portion: (portionEl && portionEl.value) || "full" })
+      .then(function (res) { if (res.error) throw res.error; return res.data; });
+  }
+  function uploadProof(r, file) {
+    var ext = (file.name.split(".").pop() || "jpg").toLowerCase().replace(/[^a-z0-9]/g, "") || "jpg";
+    var path = "staff/" + r.id + "-" + Date.now() + "." + ext;
+    return sb.storage.from("payment-proofs").upload(path, file, { contentType: file.type || "image/jpeg" }).then(function (res) {
+      if (res.error) throw res.error;
+      return path;
+    });
+  }
+
+  function guestChanges(r, patch, beforeCabanas, afterCabanas) {
+    var out = [];
+    GUEST_FIELDS.forEach(function (f) {
+      var key = f[0];
+      if (!(key in patch)) return;
+      var fmt = f[2];
+      var before = r[key] === null || r[key] === undefined ? "" : fmt(r[key]);
+      var after = patch[key] === null || patch[key] === undefined ? "" : fmt(patch[key]);
+      if (before !== after) out.push({ label: f[1], before: before || "—", after: after || "—" });
+    });
+    var b = cabanaListText(beforeCabanas), a = cabanaListText(afterCabanas);
+    // cabana numbers are internal — a change is only a guest change when they're emailed
+    var showNo = "email_cabana_numbers" in patch ? patch.email_cabana_numbers : r.email_cabana_numbers;
+    if (b !== a && showNo) out.push({ label: "Cabana no.", before: b, after: a });
+    return out;
+  }
+
+  addForm.addEventListener("submit", function (e) {
+    e.preventDefault();
+    addError.style.display = "none";
+    var vals = formValues();
+    Object.keys(vals).forEach(function (k) { if (vals[k] === undefined) delete vals[k]; });
+    var pricing = modalPricing();
+    if (pricing.error) return showFormError(pricing.error);
+    if (vals.pet_count > 2) return showFormError("A maximum of two pets are permitted per reservation.");
+    if (!vals.guest_name) return showFormError("Guest name is required.");
+    if (vals.senior_count > vals.adults) return showFormError("Senior citizens are counted within adults — senior count can't be more than adults.");
+    var recAmt = Number($("addRecAmount") && $("addRecAmount").value) || 0, recFile = $("addRecFile") && $("addRecFile").files && $("addRecFile").files[0];
+    if (!editingRow && recAmt > 0 && !recFile) return showFormError("Paid now? Attach the payment screenshot or a photo of the receipt, or clear the amount.");
+    // v50: "Confirmed · Paid" needs evidence — a recorded payment (screenshot or Xendit) or one being recorded now
+    if ((vals.stay_type !== "overnight") && (vals.status === "confirmed" || vals.status === "completed") &&
+        !(editingRow && editingRow.status === vals.status) &&
+        !(editingRow && Number(editingRow.amount_paid) > 0) && !(recAmt > 0 && recFile)) {
+      return showFormError("To mark this Confirmed · Paid, record the payment with its screenshot (or wait for the online Xendit payment). Use “Record a payment received” in the Status & Payment box.");
+    }
+    // Day trips need a cabana with a seat for everyone (Dining seats 10, Lounge 4) — same rule as online bookings.
+    // Checked on new bookings, and on edits that change the party or the cabanas.
+    if (vals.stay_type === "day_trip" || vals.stay_type === "half_day") {
+      var party = (vals.adults || 0) + (vals.children_6_12 || 0) + (vals.children_0_5 || 0);
+      var seats = (vals.dining_cabanas || 0) * 10 + (vals.lounge_cabanas || 0) * 4;
+      var er = editingRow, touched = !er || er.adults !== vals.adults || er.children_6_12 !== vals.children_6_12 || er.children_0_5 !== vals.children_0_5 ||
+        (er.dining_cabanas || 0) !== (vals.dining_cabanas || 0) || (er.lounge_cabanas || 0) !== (vals.lounge_cabanas || 0) || er.stay_type !== vals.stay_type;
+      var noCab = $("addNoCabana") && $("addNoCabana").checked;
+      if (touched && !noCab && party > 0 && seats < party) {
+        return showFormError(seats === 0
+          ? "Add a cabana — day trips need one (Dining seats 10, Lounge seats 4). Tick “Entrance only” if this guest really has none."
+          : "Not enough cabana seats: " + party + " guests but " + seats + " seats (Dining 10, Lounge 4 each). Add a cabana, or tick “Entrance only”.");
+      }
+      if (noCab && seats < party) {
+        var why = (document.querySelector('input[name="addNoCabWhy"]:checked') || {}).value;
+        if (!why) return showFormError("Entrance only — pick why: Promo, Add-on to another booking, or Others.");
+        var whyText = why === "promo" ? "Promo"
+          : why === "addon" ? "Add-on to another booking" + ($("addNoCabRef").value.trim() ? " (" + $("addNoCabRef").value.trim() + ")" : "")
+          : $("addNoCabOther").value.trim();
+        if (!whyText) return showFormError("Entrance only — type the reason under Others.");
+        var tag = "[No cabana — " + whyText + "]";
+        if (String(vals.staff_notes || "").indexOf("[No cabana —") < 0) vals.staff_notes = (tag + " " + String(vals.staff_notes || "")).trim();
+      }
+    }
+    if ((vals.pwd_kid_count || 0) > (vals.children_6_12 || 0)) return showFormError("PWD kids are counted within Kids 6–12 — PWD kids can't be more than Kids 6–12.");
+    if (assignedCount("dining") > vals.dining_cabanas || assignedCount("lounge") > vals.lounge_cabanas) {
+      return showFormError("More cabana numbers are assigned than the booking has — untick some numbers or raise the Dining / Lounge count.");
+    }
+    saveBookingBtn.disabled = true;
+    if (notifyEl.checked && !notifyEl.disabled) saveBookingBtn.textContent = editingRow ? "Saving & emailing…" : "Saving & sending…";
+
+    if (editingRow) {
+      var r = editingRow;
+      var patch = {};
+      Object.keys(vals).forEach(function (k) {
+        if (k === "stay_type_label") return; // only follows a real type change (below)
+        if (k === "booked_by") return; // locked once the booking exists (v62: the guest name can be corrected)
+        if (k === "guest_name" && (r.cb_reservation_id || !vals.guest_name)) return;
+        if (!sameValue(vals[k], r[k])) patch[k] = vals[k];
+      });
+      if (patch.stay_type) patch.stay_type_label = vals.stay_type_label;
+      var beforeCabanas = (r.booking_cabanas || []).map(function (bc) { return bc.cabana_id; });
+      var afterCabanas = modalCabanaIds.slice();
+      var changes = guestChanges(r, patch, beforeCabanas, afterCabanas);
+      var cabanaMoved = !notifyEl.disabled && changes.some(function (ch) { return ch.label === "Cabana no."; });
+      // quotation not sent yet → send it (instead of a "changes" summary)
+      var quoteNow = editQuoteMode().ok && notifyEl.checked && !notifyEl.disabled;
+      var notify = !quoteNow && ((notifyEl.checked && !notifyEl.disabled && changes.length > 0) || cabanaMoved);
+      var file = payFileEl.files && payFileEl.files[0];
+      saveBookingBtn.textContent = "Saving…";
+
+      var upload = file ? uploadProof(r, file) : Promise.resolve(null);
+      var removedFirst = ("check_in" in patch || "status" in patch)
+        ? beforeCabanas.filter(function (id) { return afterCabanas.indexOf(id) === -1; }) : [];
+      var keptBefore = beforeCabanas.filter(function (id) { return removedFirst.indexOf(id) === -1; });
+      upload
+        .then(function (path) {
+          if (!removedFirst.length) return path;
+          return sb.from("booking_cabanas").delete().eq("booking_id", r.id).in("cabana_id", removedFirst)
+            .then(function (res) { if (res.error) throw res.error; return path; });
+        })
+        .then(function (path) {
+          var save = !Object.keys(patch).length ? Promise.resolve()
+            : sb.from("booking_requests").update(patch).eq("id", r.id).then(function (res) { if (res.error) throw res.error; });
+          // A proof uploaded by staff is a verified payment (Payments, Cloudbeds folio, confirmation).
+          if (!path) return save;
+          return save.then(function () { return attachProof(r.id, path, document.getElementById("addPayPortion")); });
+        })
+        .then(function () { return syncCabanas(r.id, keptBefore, afterCabanas); })
+        .then(function () {
+          if (quoteNow) {
+            var mq = dtMail ? dtMail.value() : { subject: "", message: "" };
+            var uq = { email_guest: true };
+            if (mq.message || mq.subject) uq.email_custom = Object.assign({}, r.email_custom || {}, { quote: { subject: mq.subject || null, message: mq.message || null } });
+            return sb.from("booking_requests").update(uq).eq("id", r.id).then(function (res) { return res.error ? res.error : null; });
+          }
+          if (!notify) return null;
+          var mv = dtMail ? dtMail.value() : { message: "" };
+          return sb.rpc("notify_booking_change", {
+            p_booking_id: r.id,
+            p_changes: changes,
+            p_old_check_in: "check_in" in patch ? r.check_in : null,
+            p_message: mv.message || null,
+          }).then(function (res) { return res.error ? res.error : null; });
+        })
+        .then(function (notifyErr) {
+          saveBookingBtn.disabled = false;
+          closeModal();
+          loadBookings();
+          if (notifyErr) alert("Changes saved, but the guest email couldn't be queued: " + notifyErr.message);
+        })
+        .catch(function (err) {
+          saveBookingBtn.textContent = "Save Changes";
+          showFormError("Couldn't save the changes: " + (err && err.message ? err.message : err));
+        });
+      return;
+    }
+
+    // New booking. created_at (the "Date Entered") is left for Postgres to
+    // stamp off the server clock; order_code comes from trg_set_order_code.
+    var payload = Object.assign({}, vals, { email_guest: false });
+    if (!payload.staff_notes) delete payload.staff_notes;
+    var cabanaIds = modalCabanaIds.slice();
+    var sendQuote = notifyEl.checked && !notifyEl.disabled;
+    sb.from("booking_requests").insert([payload]).select().then(function (res) {
+      if (res.error) return showFormError("Couldn't save this booking: " + res.error.message);
+      var row = res.data && res.data[0];
+      var paidNow = Number($("addRecAmount") && $("addRecAmount").value) || 0;
+      var attach = (row && cabanaIds.length ? syncCabanas(row.id, [], cabanaIds) : Promise.resolve()).then(function () {
+        // "Paid now?" on a new booking (walk-ins): record it straight away
+        if (!row || !(paidNow > 0)) return null;
+        return recordPayment(row, paidNow).then(function (e) { if (e) alert("Booking saved, but the payment couldn't be recorded: " + e.message + " — record it from the booking."); });
+      });
+      attach.then(function () {
+        // Flip email_guest only now that the cabanas are attached — the
+        // database trigger then sends the quotation with them listed.
+        if (!sendQuote || !row) return null;
+        var mv = dtMail ? dtMail.value() : { subject: "", message: "" };
+        var upd = { email_guest: true };
+        if (mv.message || mv.subject) upd.email_custom = { quote: { subject: mv.subject || null, message: mv.message || null } };
+        return sb.from("booking_requests").update(upd).eq("id", row.id).then(function (u) {
+          return u.error ? "Booking saved, but the quotation email couldn't be queued: " + u.error.message : null;
+        });
+      }).then(function (warn) {
+        saveBookingBtn.disabled = false;
+        closeModal();
+        loadBookings();
+        if (warn) alert(warn);
+      }, function (err) {
+        saveBookingBtn.disabled = false;
+        closeModal();
+        loadBookings();
+        alert("Booking saved, but the cabana(s) couldn't be attached" + (sendQuote ? " and the quotation was NOT sent" : "") + ": " + (err && err.message ? err.message : err));
+      });
+    });
+  });
+
+  // ---------- Cabana Map planner ----------
+  // A whole-day view of every cabana. Click a booked cabana to pick it up,
+  // then a free one to move that party there, or another booked one to swap
+  // the two parties. Each affected guest gets the "changes to your
+  // reservation" email (if they have an email and the box is ticked).
+  var plannerBackdrop = $("plannerBackdrop");
+  var plannerDateEl = $("plannerDate");
+  var plannerMapEl = $("plannerMap");
+  var plannerStatus = $("plannerStatus");
+  var plannerConfirm = $("plannerConfirm");
+  var plannerList = $("plannerList");
+  var plannerSource = null;   // { cabanaId, row }
+  var plannerPending = null;  // { from, to, row, other }
+  var blockMode = false;      // "Block cabanas…" panel open: map clicks pick cabanas to block
+  var blockPicked = [];       // cabana ids picked for the new block
+
+  function plannerHolds(dateStr) {
+    var byCabana = {};
+    allRows.forEach(function (r) {
+      if (r.check_in !== dateStr || releasesCabanas(r.status)) return;
+      (r.booking_cabanas || []).forEach(function (bc) { byCabana[bc.cabana_id] = r; });
+    });
+    return byCabana;
+  }
+  function cabLabel(id) { return cabanasById[id] ? cabanasById[id].label.replace(/^Section /, "Sec. ") : "cabana"; }
+  function partySize(r) { return (r.adults || 0) + (r.children_6_12 || 0) + (r.children_0_5 || 0); }
+
+  function renderPlanner() {
+    var dateStr = plannerDateEl.value;
+    var holds = plannerHolds(dateStr);
+    var heldSet = new Set(Object.keys(holds));
+    var blocks = blocksForDate(dateStr);
+    // Parties already sitting on a cabana that was blocked after they booked.
+    var conflicts = Object.keys(holds).filter(function (id) { return blocks.set.has(id); });
+    var info = {};
+    Object.keys(holds).forEach(function (id) {
+      var r = holds[id];
+      info[id] = (r.guest_name || "Guest") + (r.order_code ? " (" + r.order_code + ")" : "") + " · " + partySize(r) + " pax";
+    });
+    if (blockMode) {
+      plannerConfirm.classList.remove("open");
+      plannerStatus.className = "planner-status is-pending";
+      plannerStatus.textContent = blockPicked.length
+        ? blockPicked.length + " cabana(s) picked to block. Click more on the map, or click one again to un-pick it."
+        : "Click the cabanas you want to block on the map.";
+      renderBlockPicked();
+    } else if (plannerPending) {
+      plannerStatus.className = "planner-status is-pending";
+      plannerStatus.textContent = plannerPending.other
+        ? "Swap: " + plannerPending.row.guest_name + " → " + cabLabel(plannerPending.to) + ", and " + plannerPending.other.guest_name + " → " + cabLabel(plannerPending.from) + "?"
+        : "Move " + plannerPending.row.guest_name + " from " + cabLabel(plannerPending.from) + " to " + cabLabel(plannerPending.to) + "?";
+      plannerConfirm.classList.add("open");
+    } else {
+      plannerConfirm.classList.remove("open");
+      plannerStatus.className = "planner-status";
+      plannerStatus.textContent = plannerSource
+        ? "Picked up " + cabLabel(plannerSource.cabanaId) + " (" + plannerSource.row.guest_name + "). Click a free cabana to move it there, another booked cabana to swap, or the same one to put it back."
+        : (heldSet.size ? heldSet.size + " cabana(s) booked on " + fmtDate(dateStr) + ". Hover to see who has each; click one to move it." : "No cabanas booked on " + fmtDate(dateStr) + ".") +
+          (blocks.set.size ? " " + blocks.set.size + " blocked (hatched) — click one to remove its block." : "");
+    }
+    if (conflicts.length && !plannerPending) {
+      var warn = document.createElement("span");
+      warn.className = "planner-warn";
+      warn.textContent = "⚠ " + conflicts.map(function (id) { return (holds[id].guest_name || "A guest") + " is on " + cabLabel(id); }).join("; ") +
+        " — blocked on this date. Pick that cabana up and move the party to a free one.";
+      plannerStatus.appendChild(warn);
+    }
+    window.VBRCabanaMap.render(plannerMapEl, {
+      cabanas: cabanasList,
+      heldSet: heldSet,
+      heldInfo: info,
+      blockedSet: blocks.set,
+      blockedInfo: blocks.info,
+      clickableHeld: true,
+      clickableBlocked: true,
+      selectedIds: blockMode ? blockPicked : null,
+      highlightId: blockMode ? null : (plannerPending ? plannerPending.to : (plannerSource ? plannerSource.cabanaId : null)),
+      selectedLabel: blockMode ? "Picked to block" : "Picked up / moving to",
+      crop: { top: 0.33, bottom: 0.56 },
+      onSelect: function (c) {
+        if (plannerPending) return;
+        var holder = holds[c.id];
+        var block = blocks.byCabana[c.id];
+        if (blockMode) {
+          if (block) { plannerStatus.textContent = cabLabel(c.id) + " is already blocked on this date (" + blocks.info[c.id] + ")."; return; }
+          var k = blockPicked.indexOf(c.id);
+          if (k >= 0) blockPicked.splice(k, 1); else blockPicked.push(c.id);
+          renderPlanner();
+          return;
+        }
+        if (block) {
+          if (plannerSource) {
+            plannerStatus.textContent = cabLabel(c.id) + " is blocked on this date (" + blocks.info[c.id] + ") — pick a free cabana.";
+            return;
+          }
+          if (!holder) { removeBlock(block); return; }
+        }
+        if (!plannerSource) {
+          if (holder) plannerSource = { cabanaId: c.id, row: holder };
+        } else if (c.id === plannerSource.cabanaId) {
+          plannerSource = null;
+        } else {
+          plannerPending = { from: plannerSource.cabanaId, to: c.id, row: plannerSource.row, other: holder && holder.id !== plannerSource.row.id ? holder : null };
+          if (holder && holder.id === plannerSource.row.id) { plannerPending = null; plannerStatus.textContent = "That cabana already belongs to the same booking."; return; }
+        }
+        renderPlanner();
+      },
+    });
+    // the day's bookings
+    var dayRows = allRows.filter(function (r) { return r.check_in === dateStr && !releasesCabanas(r.status); })
+      .sort(function (a, b) { return partySize(b) - partySize(a); });
+    plannerList.innerHTML = dayRows.length ? "" : '<tr><td colspan="5" class="muted">No active bookings on this date.</td></tr>';
+    dayRows.forEach(function (r) {
+      var tr = document.createElement("tr");
+      if (plannerSource && plannerSource.row.id === r.id) tr.className = "is-source";
+      var cabs = (r.booking_cabanas || []).map(function (bc) { return cabLabel(bc.cabana_id); }).join(", ");
+      var nc = countsOf(r);
+      if (!cabs && (nc.dining || nc.lounge)) cabs = nc.dining + " dining, " + nc.lounge + " lounge (no numbers yet)";
+      [r.guest_name || "—", r.order_code || "—", partySize(r) + " pax", cabs || "— not assigned", STATUS_LABELS[r.status] || r.status].forEach(function (t) {
+        var td = document.createElement("td"); td.textContent = t; tr.appendChild(td);
+      });
+      plannerList.appendChild(tr);
+    });
+    renderBlockList(dateStr);
+  }
+
+  // ---------- cabana blocks: list, add, remove ----------
+  function renderBlockList(dateStr) {
+    var ul = $("plannerBlockList");
+    if (!ul) return;
+    var upcoming = cabanaBlocks.filter(function (b) { return b.end_date >= (dateStr || todayStr()); })
+      .sort(function (a, b) { return a.start_date < b.start_date ? -1 : a.start_date > b.start_date ? 1 : (cabLabel(a.cabana_id) < cabLabel(b.cabana_id) ? -1 : 1); });
+    $("plannerBlocksHint").textContent = upcoming.length ? "on or after " + fmtDate(dateStr) : "";
+    ul.innerHTML = upcoming.length ? "" : '<li class="muted">No cabanas blocked on or after ' + esc(fmtDate(dateStr)) + ".</li>";
+    upcoming.forEach(function (b) {
+      var li = document.createElement("li");
+      if (dateStr >= b.start_date && dateStr <= b.end_date) li.className = "is-today";
+      li.innerHTML = '<span><span class="block-reason r-' + esc(b.reason) + '">' + esc(BLOCK_REASONS[b.reason] || "Blocked") + "</span><b>" + esc(cabLabel(b.cabana_id)) + "</b> · " +
+        esc(blockDates(b)) + (b.note ? " · " + esc(b.note) : "") +
+        '<span class="block-meta">' + (b.created_by_email ? "by " + esc(b.created_by_email) + " · " : "") + esc(fmtDateTime(b.created_at)) + "</span></span>" +
+        '<button class="btn-sm ghost" type="button">Remove</button>';
+      li.querySelector("button").addEventListener("click", function () { removeBlock(b); });
+      ul.appendChild(li);
+    });
+  }
+
+  function removeBlock(b) {
+    if (!confirm("Remove the block on " + cabLabel(b.cabana_id) + "?\n\n" + blockText(b) + "\n\nIt becomes bookable again on all of those dates.")) return;
+    sb.from("cabana_blocks").delete().eq("id", b.id).then(function (res) {
+      if (res.error) { alert("Couldn't remove the block: " + res.error.message); return; }
+      loadCabanaBlocks().then(function () { renderPlanner(); render(); });
+    });
+  }
+
+  function renderBlockPicked() {
+    var wrap = $("blkCabPicked");
+    wrap.innerHTML = "";
+    if (!blockPicked.length) { wrap.innerHTML = '<span class="muted" style="font-size:0.8rem;">No cabana picked yet.</span>'; return; }
+    blockPicked.forEach(function (id) {
+      var chip = document.createElement("span");
+      chip.className = "cabana-mini-chip";
+      chip.textContent = cabLabel(id);
+      var rm = document.createElement("button");
+      rm.type = "button";
+      rm.className = "cabana-mini-remove";
+      rm.textContent = "×";
+      rm.addEventListener("click", function () { blockPicked = blockPicked.filter(function (x) { return x !== id; }); renderPlanner(); });
+      chip.appendChild(rm);
+      wrap.appendChild(chip);
+    });
+  }
+
+  function openBlockMode() {
+    blockMode = true;
+    blockPicked = [];
+    plannerSource = null; plannerPending = null;
+    $("blkCabFrom").value = plannerDateEl.value || todayStr();
+    $("blkCabTo").value = plannerDateEl.value || todayStr();
+    $("blkCabNote").value = "";
+    $("blkCabError").style.display = "none";
+    $("plannerBlockPanel").hidden = false;
+    renderPlanner();
+  }
+  function closeBlockMode() {
+    blockMode = false;
+    blockPicked = [];
+    $("plannerBlockPanel").hidden = true;
+    renderPlanner();
+  }
+
+  function saveBlocks() {
+    var err = $("blkCabError");
+    var fail = function (m) { err.textContent = m; err.style.display = "block"; };
+    err.style.display = "none";
+    var from = $("blkCabFrom").value, to = $("blkCabTo").value;
+    var reason = $("blkCabReason").value, note = $("blkCabNote").value.trim();
+    if (!blockPicked.length) return fail("Pick at least one cabana on the map.");
+    if (!from || !to) return fail("Set the first and last day of the block.");
+    if (to < from) return fail("The last day can't be before the first day.");
+    // Bookings already on those cabanas in that range keep them — warn first.
+    var hits = [];
+    allRows.forEach(function (r) {
+      if (!r.check_in || r.check_in < from || r.check_in > to || releasesCabanas(r.status)) return;
+      (r.booking_cabanas || []).forEach(function (bc) {
+        if (blockPicked.indexOf(bc.cabana_id) >= 0) hits.push(fmtDate(r.check_in) + " · " + cabLabel(bc.cabana_id) + " · " + (r.guest_name || "Guest") + (r.order_code ? " (" + r.order_code + ")" : ""));
+      });
+    });
+    if (hits.length && !confirm(hits.length + " existing booking(s) are on these cabanas in that range:\n\n" + hits.slice(0, 12).join("\n") + (hits.length > 12 ? "\n…and " + (hits.length - 12) + " more" : "") +
+        "\n\nThey keep their cabana until you move them (they'll be flagged ⚠ on the dashboard). Block anyway?")) return;
+    var btn = $("blkCabSave");
+    btn.disabled = true;
+    var rows = blockPicked.map(function (id) { return { cabana_id: id, start_date: from, end_date: to, reason: reason, note: note || null }; });
+    sb.from("cabana_blocks").insert(rows).then(function (res) {
+      btn.disabled = false;
+      if (res.error) {
+        return fail(/overlap|exclusion|conflict|cabana_blocks_no_overlap/i.test(res.error.message)
+          ? "One of those cabanas already has a block on some of those dates. Remove or shorten that block first (list below the map)."
+          : /relation .*cabana_blocks.* does not exist/i.test(res.error.message)
+            ? "Cabana blocks aren't set up in the database yet — run supabase-functions/booking-v20-cabana-blocks.sql first."
+            : "Couldn't save the block: " + res.error.message);
+      }
+      blockMode = false;
+      blockPicked = [];
+      $("plannerBlockPanel").hidden = true;
+      loadCabanaBlocks().then(function () { renderPlanner(); render(); });
+    });
+  }
+  $("plannerBlockBtn").addEventListener("click", function () { if (blockMode) closeBlockMode(); else openBlockMode(); });
+  $("blkCabCancel").addEventListener("click", closeBlockMode);
+  $("blkCabSave").addEventListener("click", saveBlocks);
+  $("blkCabFrom").addEventListener("change", function () {
+    if ($("blkCabFrom").value && (!$("blkCabTo").value || $("blkCabTo").value < $("blkCabFrom").value)) $("blkCabTo").value = $("blkCabFrom").value;
+  });
+
+  function emailMove(r, beforeIds, afterIds) {
+    // Cabana numbers are internal: a move is emailed only when the booking has
+    // "Include cabana numbers in guest emails" ticked (v33).
+    if (!r.email_cabana_numbers || !EMAIL_RE.test(String(r.guest_email || "").trim())) return Promise.resolve();
+    var changes = [{ label: "Cabana no.", before: cabanaListText(beforeIds), after: cabanaListText(afterIds) }];
+    return sb.rpc("notify_booking_change", { p_booking_id: r.id, p_changes: changes, p_old_check_in: null });
+  }
+
+  function applyPlannerMove() {
+    var m = plannerPending;
+    if (!m) return;
+    var btn = $("plannerConfirmBtn");
+    btn.disabled = true;
+    var aBefore = (m.row.booking_cabanas || []).map(function (bc) { return bc.cabana_id; });
+    var aAfter = aBefore.map(function (id) { return id === m.from ? m.to : id; });
+    var bBefore = null, bAfter = null;
+    if (m.other) {
+      bBefore = (m.other.booking_cabanas || []).map(function (bc) { return bc.cabana_id; });
+      bAfter = bBefore.map(function (id) { return id === m.to ? m.from : id; });
+    }
+    // For a swap, free cabana B first so the two moves can't collide.
+    var run = m.other
+      ? sb.from("booking_cabanas").delete().eq("booking_id", m.other.id).eq("cabana_id", m.to)
+          .then(function (res) { if (res.error) throw res.error; return syncCabanas(m.row.id, aBefore, aAfter); })
+          .then(function () { return sb.from("booking_cabanas").insert([{ booking_id: m.other.id, cabana_id: m.from }]); })
+          .then(function (res) { if (res && res.error) throw res.error; })
+      : syncCabanas(m.row.id, aBefore, aAfter);
+    run
+      .then(function () {
+        return Promise.all([emailMove(m.row, aBefore, aAfter), m.other ? emailMove(m.other, bBefore, bAfter) : null]);
+      })
+      .then(function () { plannerPending = null; plannerSource = null; return loadBookings(); })
+      .then(function () { btn.disabled = false; renderPlanner(); })
+      .catch(function (err) {
+        btn.disabled = false;
+        plannerPending = null;
+        plannerStatus.textContent = "Couldn't move the cabana: " + (err && err.message ? err.message : err);
+        loadBookings().then(renderPlanner);
+      });
+  }
+
+  function shiftPlannerDate(days) {
+    var d = new Date((plannerDateEl.value || todayStr()) + "T00:00:00");
+    d.setDate(d.getDate() + days);
+    plannerDateEl.value = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+    plannerSource = null; plannerPending = null;
+    renderPlanner();
+  }
+  $("plannerBtn").addEventListener("click", function () {
+    if (!plannerDateEl.value) plannerDateEl.value = todayStr();
+    plannerSource = null; plannerPending = null;
+    blockMode = false; blockPicked = []; $("plannerBlockPanel").hidden = true;
+    plannerBackdrop.classList.add("open");
+    renderPlanner();
+    loadCabanaBlocks().then(renderPlanner); // pick up blocks another staff member just made
+  });
+  $("closePlannerBtn").addEventListener("click", function () { plannerBackdrop.classList.remove("open"); });
+  plannerBackdrop.addEventListener("click", function (e) { if (e.target === plannerBackdrop) plannerBackdrop.classList.remove("open"); });
+  plannerDateEl.addEventListener("change", function () { plannerSource = null; plannerPending = null; renderPlanner(); });
+  $("plannerPrev").addEventListener("click", function () { shiftPlannerDate(-1); });
+  $("plannerNext").addEventListener("click", function () { shiftPlannerDate(1); });
+  $("plannerToday").addEventListener("click", function () { plannerDateEl.value = todayStr(); plannerSource = null; plannerPending = null; renderPlanner(); });
+  $("plannerConfirmBtn").addEventListener("click", applyPlannerMove);
+  $("plannerCancelBtn").addEventListener("click", function () { plannerPending = null; renderPlanner(); });
+
+  // ---------- CSV export (currently filtered/visible rows) ----------
+  document.getElementById("exportBtn").addEventListener("click", function () {
+    var rows = sortRows(applyFilter(allRows));
+    var headers = ["Booking ID", "Guest", "Guest Names", "Phone", "Email", "Type", "Booked By", "Preferred Date / Check-in", "Check-out", "Cabana(s) / Room(s)", "Adults", "Senior Citizens", "Kids 6-12", "Kids 0-5", "Pets", "Subtotal (People)", "Cabana Total", "Senior Discount", "Total", "Status", "Payment Proof", "Senior ID(s)", "Source", "Made on", "How Heard", "Occasion", "Notes", "Staff Notes", "Date Entered"];
+    function csvCell(v) {
+      v = v === null || v === undefined ? "" : String(v);
+      return '"' + v.replace(/"/g, '""') + '"';
+    }
+    var lines = [headers.map(csvCell).join(",")];
+    rows.forEach(function (r) {
+      var cabanaLabels = (r.booking_cabanas || [])
+        .map(function (bc) { return cabanasById[bc.cabana_id] ? cabanasById[bc.cabana_id].label : ""; })
+        .filter(Boolean)
+        .join("; ");
+      var ncsv = countsOf(r);
+      if (ncsv.dining || ncsv.lounge) {
+        cabanaLabels = [ncsv.dining ? ncsv.dining + " dining" : "", ncsv.lounge ? ncsv.lounge + " lounge" : ""].filter(Boolean).join(", ") +
+          (cabanaLabels ? " — " + cabanaLabels : "");
+      }
+      if (r.stay_type === "overnight" && window.VBRVillas) cabanaLabels = window.VBRVillas.labelsFor(r).join("; ");
+      lines.push([
+        r.order_code, r.guest_name, r.guest_names || "", r.guest_phone, r.guest_email,
+        TYPE_LABELS[r.stay_type] || r.stay_type, r.booked_by || "", fmtDate(r.check_in), r.check_out ? fmtDate(r.check_out) : "", cabanaLabels,
+        r.adults, r.senior_count || 0, r.children_6_12, r.children_0_5, r.pet_count || 0,
+        r.subtotal_people != null ? r.subtotal_people : "", r.cabana_total != null ? r.cabana_total : "",
+        r.senior_discount != null ? r.senior_discount : "", r.total_amount != null ? r.total_amount : "",
+        STATUS_LABELS[r.status] || r.status, r.payment_screenshot_path ? "Uploaded" : "",
+        (r.senior_id_paths && r.senior_id_paths.length) ? "Uploaded (" + r.senior_id_paths.length + ")" : "",
+        SOURCE_LABELS[r.source] || r.source, ORIGIN_LABELS[originOf(r)] || originOf(r), r.how_heard || "", r.occasion || "",
+        r.notes, r.staff_notes, fmtDateTime(r.created_at),
+      ].map(csvCell).join(","));
+    });
+    var blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    var stamp = new Date().toISOString().slice(0, 10);
+    a.href = url;
+    a.download = "vbr-bookings-" + activeFilter + "-" + stamp + ".csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  });
+
+  // ---------- activity log modal ----------
+  var logBtn = document.getElementById("logBtn");
+  var logModalBackdrop = document.getElementById("logModalBackdrop");
+  var closeLogBtn = document.getElementById("closeLogBtn");
+  var logBody = document.getElementById("logBody");
+  var logStaffFilter = document.getElementById("logStaffFilter");
+  var logFrom = document.getElementById("logFrom");
+  var logTo = document.getElementById("logTo");
+  var logRefreshBtn = document.getElementById("logRefreshBtn");
+  var logBookingFilterEl = document.getElementById("logBookingFilter");
+  var currentLogBookingId = null;
+  var logOptionsPopulated = false;
+
+  function populateLogStaffOptions() {
+    if (logOptionsPopulated) return;
+    logOptionsPopulated = true;
+    Object.keys(STAFF_EMAIL_NAMES).sort(function (a, b) {
+      return STAFF_EMAIL_NAMES[a].localeCompare(STAFF_EMAIL_NAMES[b]);
+    }).forEach(function (email) {
+      var opt = document.createElement("option");
+      opt.value = email;
+      opt.textContent = STAFF_EMAIL_NAMES[email];
+      logStaffFilter.appendChild(opt);
+    });
+  }
+
+  function staffLabelForLogEmail(email) {
+    if (!email) return "—";
+    var name = staffNameForEmail(email);
+    return name || email;
+  }
+
+  function describeLogChanges(entry) {
+    if (entry.action === "insert") return "New booking created.";
+    if (entry.action === "delete") return "Booking deleted.";
+    if (entry.action && entry.action.indexOf("villa_") === 0) {
+      var ch = entry.changes || {};
+      return esc((LOG_ACTION_LABELS[entry.action] || entry.action) + ": " + (ch.from_villa ? ch.from_villa + " → " : "") + (ch.villa || "a villa") +
+        (ch.check_in ? " (" + fmtDate(ch.check_in) + " → " + fmtDate(ch.check_out) + ")" : "") + (ch.reason ? " — " + ch.reason : ""));
+    }
+    if (entry.action && entry.action.indexOf("cabana_block") === 0 || entry.action === "cabana_unblocked") {
+      var bc = entry.changes || {};
+      return esc((LOG_ACTION_LABELS[entry.action] || entry.action) + ": " + (bc.cabana || "a cabana") +
+        (bc.start_date ? " (" + fmtDate(bc.start_date) + (bc.end_date && bc.end_date !== bc.start_date ? " → " + fmtDate(bc.end_date) : "") + ")" : "") +
+        (bc.reason ? " — " + bc.reason : "") + (bc.note ? ": " + bc.note : ""));
+    }
+    if (entry.action === "cabana_added" || entry.action === "cabana_removed") {
+      var cid = entry.changes && entry.changes.cabana_id;
+      var label = cid && cabanasById[cid] ? cabanasById[cid].label : "a cabana";
+      return (entry.action === "cabana_added" ? "Added " : "Removed ") + label;
+    }
+    if (entry.action === "update" && entry.changes) {
+      var parts = [];
+      Object.keys(entry.changes).forEach(function (field) {
+        var c = entry.changes[field];
+        var oldV = c && c.old !== undefined && c.old !== null ? String(c.old) : "—";
+        var newV = c && c.new !== undefined && c.new !== null ? String(c.new) : "—";
+        parts.push("<b>" + field + "</b>: " + oldV + " → " + newV);
+      });
+      return parts.length ? parts.join("<br>") : "Minor update (no visible fields changed).";
+    }
+    return "—";
+  }
+
+  function loadLog() {
+    logBody.innerHTML = '<tr><td colspan="5" style="padding:24px;text-align:center;color:var(--ink-soft);">Loading…</td></tr>';
+    var query = sb.from("booking_audit_log").select("*").order("logged_at", { ascending: false }).limit(300);
+    if (currentLogBookingId) query = query.eq("booking_id", currentLogBookingId);
+    if (logStaffFilter.value) query = query.eq("changed_by_email", logStaffFilter.value);
+    if (logFrom.value) query = query.gte("logged_at", logFrom.value + "T00:00:00");
+    if (logTo.value) query = query.lte("logged_at", logTo.value + "T23:59:59");
+    query.then(function (res) {
+      if (res.error) {
+        logBody.innerHTML = '<tr><td colspan="5" style="padding:24px;text-align:center;color:var(--rose,#9c4a3f);">Couldn\'t load the log: ' + res.error.message + "</td></tr>";
+        return;
+      }
+      var entries = res.data || [];
+      if (!entries.length) {
+        logBody.innerHTML = '<tr><td colspan="5" style="padding:24px;text-align:center;color:var(--ink-soft);">No matching activity.</td></tr>';
+        return;
+      }
+      logBody.innerHTML = "";
+      entries.forEach(function (entry) {
+        var tr = document.createElement("tr");
+
+        var tdWhen = document.createElement("td");
+        tdWhen.textContent = fmtDateTime(entry.logged_at);
+        tr.appendChild(tdWhen);
+
+        var tdStaff = document.createElement("td");
+        tdStaff.textContent = staffLabelForLogEmail(entry.changed_by_email);
+        tr.appendChild(tdStaff);
+
+        var tdAction = document.createElement("td");
+        tdAction.textContent = LOG_ACTION_LABELS[entry.action] || entry.action;
+        tr.appendChild(tdAction);
+
+        var tdBooking = document.createElement("td");
+        tdBooking.textContent = (entry.guest_name || "—") + (entry.order_code ? " (" + entry.order_code + ")" : "");
+        tr.appendChild(tdBooking);
+
+        var tdWhat = document.createElement("td");
+        tdWhat.className = "log-change";
+        tdWhat.innerHTML = describeLogChanges(entry);
+        tr.appendChild(tdWhat);
+
+        logBody.appendChild(tr);
+      });
+    });
+  }
+
+  function openLogModal(bookingId, bookingLabel) {
+    populateLogStaffOptions();
+    currentLogBookingId = bookingId || null;
+    if (currentLogBookingId) {
+      logBookingFilterEl.style.display = "block";
+      logBookingFilterEl.innerHTML = "Showing history for <b>" + (bookingLabel || "this booking") + '</b> only — <a id="logShowAllLink">show all bookings</a>';
+      var link = document.getElementById("logShowAllLink");
+      if (link) link.addEventListener("click", function () {
+        currentLogBookingId = null;
+        logBookingFilterEl.style.display = "none";
+        loadLog();
+      });
+    } else {
+      logBookingFilterEl.style.display = "none";
+    }
+    logModalBackdrop.classList.add("open");
+    loadLog();
+  }
+  function closeLogModal() { logModalBackdrop.classList.remove("open"); }
+
+  logBtn.addEventListener("click", function () { openLogModal(null, null); });
+  closeLogBtn.addEventListener("click", closeLogModal);
+  logModalBackdrop.addEventListener("click", function (e) { if (e.target === logModalBackdrop) closeLogModal(); });
+  logRefreshBtn.addEventListener("click", loadLog);
+  logStaffFilter.addEventListener("change", loadLog);
+  logFrom.addEventListener("change", loadLog);
+  logTo.addEventListener("change", loadLog);
+
+  // ---------- price breakdown (click a Total) ----------
+  var bdBackdrop = document.getElementById("bdBackdrop"), bdBody = document.getElementById("bdBody");
+  var bdRow = null;
+  function closeBreakdown() { bdBackdrop.classList.remove("open"); bdRow = null; }
+  document.getElementById("bdClose").addEventListener("click", closeBreakdown);
+  bdBackdrop.addEventListener("click", function (e) { if (e.target === bdBackdrop) closeBreakdown(); });
+  document.getElementById("bdEdit").addEventListener("click", function () {
+    var r = bdRow; closeBreakdown();
+    if (!r) return;
+    if (isVillaRow(r) && window.VBRVillas) window.VBRVillas.openBooking(r); else openModal(r);
+  });
+  var KIND_SECTIONS = { room: "Room", meal: "Full-board meals", senior_room: "Discounts", extra_bed: "Extras", pet: "Extras", add_on: "Add-ons", online_discount: "Discounts", code_discount: "Discounts", discount: "Discounts" };
+  // Overnight quote lines → "desc · 2 × ₱15,525" rows, grouped.
+  function villaRows(lines) {
+    var out = [], last = null;
+    (lines || []).forEach(function (l) {
+      var sec = KIND_SECTIONS[l.kind] || "Other";
+      if (sec !== last) { out.push('<div class="bill-sec">' + esc(sec) + "</div>"); last = sec; }
+      var amt = Number(l.amount), qty = Number(l.qty) || 0, rate = Number(l.rate) || 0;
+      var math = qty && rate && l.kind !== "senior_room" && l.kind !== "online_discount" && l.kind !== "code_discount" ? '<span class="bd-qty">' + qty + " × " + esc(peso(Math.abs(rate))) + "</span>" : "";
+      out.push(billRow(esc(String(l.desc).replace(/VAT-exempt,\s*/gi, "")) + math, amt === 0 ? "Free" : (amt < 0 ? "−" + peso(-amt) : peso(amt)), amt < 0 ? "discount" : ""));
+    });
+    return out;
+  }
+  function openBreakdown(r) {
+    bdRow = r;
+    document.getElementById("bdTitle").textContent = "Price breakdown" + (r.order_code ? " · " + r.order_code : "");
+    var when = isVillaRow(r) ? fmtDate(r.check_in) + " → " + fmtDate(r.check_out) + " · " + nightsOf(r) + " night" + (nightsOf(r) === 1 ? "" : "s") : fmtDate(r.check_in);
+    document.getElementById("bdSub").textContent = (r.guest_name || "") + " · " + (TYPE_LABELS[r.stay_type] || r.stay_type || "") + " · " + when;
+    var note = document.getElementById("bdNote");
+    note.textContent = "";
+    var saved = r.total_amount == null ? null : Number(r.total_amount);
+    var foot = function (calc) {
+      var html = '<div class="bill-total"><span>Total on the booking</span><span>' + (saved == null ? "—" : peso(saved)) + "</span></div>";
+      if (calc != null && saved != null && Math.abs(calc - saved) > 0.5) {
+        html += '<p class="bill-note">The rate sheet gives ' + peso(calc) + " for these details — the booking keeps its agreed total of " + peso(saved) +
+          (r.source === "sheet_import" ? " (from the 2026 Day Trip sheet)." : /Cloudbeds/.test(r.staff_notes || "") ? " (from Cloudbeds — rate plans, promos and OTA prices differ)." : ".") + "</p>";
+      }
+      return html;
+    };
+    if (/^\[Imported from Cloudbeds/.test(r.staff_notes || "")) note.textContent = (r.staff_notes || "").replace(/^\[Imported from Cloudbeds #\d+\]\s*·?\s*/, "Cloudbeds: ");
+    else if (r.source === "sheet_import" && r.staff_notes) note.textContent = "Sheet remarks: " + r.staff_notes.replace(/^\[Imported from 2026 Day Trip Calendar\]\s*/, "");
+    if (isVillaRow(r) && r.cb_owned) {
+      var ci = r.cb_info || {};
+      var CL = ['<div class="bill-sec">Cloudbeds folio</div>',
+        billRow(esc(r.room_name || "Room(s)") + '<span class="bd-qty">' + nightsOf(r) + " night" + (nightsOf(r) === 1 ? "" : "s") + "</span>", ci.total != null ? peso(ci.total) : peso(r.total_amount))];
+      if (ci.paid != null) CL.push(billRow("Paid", "−" + peso(ci.paid), "discount"));
+      if (ci.balance != null) CL.push(billRow("<b>Balance</b>", "<b>" + peso(ci.balance) + "</b>"));
+      bdBody.innerHTML = '<div class="bill-lines">' + CL.join("") + "</div>" +
+        '<p class="bill-note">This stay was booked in Cloudbeds, so it\'s priced there (rate plans, promos, OTA prices). ' +
+        (cbUrl(r) ? '<a class="cb-link" data-cb="' + esc(r.cb_reservation_id) + '" href="' + cbUrl(r) + '" target="_blank" rel="noopener">Open the folio in Cloudbeds ↗</a> (copies #' + esc(r.cb_reservation_id) + ")" : "") + "</p>";
+      bdBackdrop.classList.add("open");
+      return;
+    }
+    if (isVillaRow(r)) {
+      bdBody.innerHTML = '<div class="bill-lines">' + billRow("Calculating…", "") + "</div>";
+      sb.rpc("quote_booking_overnight", { p_booking_id: r.id }).then(function (res) {
+        if (bdRow !== r) return;
+        if (res.error || !res.data || !res.data.ok) {
+          bdBody.innerHTML = '<div class="bill-lines">' + billRow(esc((res.error && res.error.message) || (res.data && res.data.error) || "No villa assigned — can't price this stay"), "—") + "</div>" + foot(null);
+          return;
+        }
+        var q = res.data, L = villaRows(q.lines), calc = Number(q.total);
+        var d = Number(r.discount_amount) || 0;
+        if (d > 0) { L.push(billRow("Discount" + (r.discount_reason ? " — " + esc(r.discount_reason) : ""), "−" + peso(d), "discount")); calc -= d; }
+        bdBody.innerHTML = '<div class="bill-lines">' + L.join("") + "</div>" +
+          '<p class="bill-note">' + q.nights + " night(s) · " + q.weekday_nights + " weekday, " + q.weekend_nights + " weekend/peak · " + q.guests + " guest(s)</p>" + foot(Math.round(calc * 100) / 100);
+      });
+    } else {
+      var nb = countsOf(r);
+      var b = P.compute({ type: r.stay_type, adults: r.adults, kids612: r.children_6_12, kids05: r.children_0_5, seniors: r.senior_count, pwdKids: r.pwd_kid_count, pets: r.pet_count, dining: nb.dining, lounge: nb.lounge });
+      if (!b.rated) {
+        bdBody.innerHTML = '<div class="bill-lines">' + billRow(esc(FULL_TYPE_NAMES[r.stay_type] || r.stay_type || "Booking"), "Quoted by hand") + "</div>" + foot(null);
+      } else {
+        var L = dayTripRows(b), calc = b.total;
+        var d2 = Number(r.discount_amount) || 0;
+        if (d2 > 0) { L.push(billRow("Discount" + (r.discount_reason ? " — " + esc(r.discount_reason) : ""), "−" + peso(d2), "discount")); calc -= d2; }
+        bdBody.innerHTML = '<div class="bill-lines">' + (L.join("") || billRow("No guests or cabanas recorded", "—")) + "</div>" + foot(P.r2(calc));
+      }
+    }
+    bdBackdrop.classList.add("open");
+  }
+
+  // ---------- Cloudbeds sync status (Rooms section) ----------
+  var cbBar = document.getElementById("cbSync"), cbLastRun = null;
+  function ago(ts) {
+    var m = Math.round((Date.now() - new Date(ts).getTime()) / 60000);
+    return m < 1 ? "just now" : m < 60 ? m + " min ago" : Math.round(m / 60) + " h ago";
+  }
+  function loadCbStatus() {
+    if (!cbBar) return;
+    sb.rpc("cb_sync_status").then(function (res) {
+      if (res.error) { cbBar.hidden = true; return; }
+      var s = res.data || {}, lp = s.last_pull || {}, html = [];
+      cbBar.hidden = false;
+      var wasOn = cbPushOn;
+      cbPushOn = s.push_enabled === true;
+      var ran = lp.ran_at || null;
+      var stale = !ran || Date.now() - new Date(ran).getTime() > 20 * 60000;
+      html.push('<span class="cb-dot' + (stale ? " bad" : "") + '"></span><b>Cloudbeds</b> ' +
+        (s.setup ? (ran ? "synced " + ago(ran) : "waiting for the first sync") : "sync not set up yet"));
+      if (!cbPushOn) html.push('<span class="cb-test" title="Cloudbeds reservations come in, but nothing made on the website is sent to Cloudbeds until launch.">TEST MODE · website bookings stay here</span>');
+      else if (s.push_waiting) html.push('<span class="' + (s.push_errors ? "cb-warn" : "") + '" title="Website villa bookings not in Cloudbeds yet (retried every 5 min)">' +
+        s.push_waiting + " website booking" + (s.push_waiting === 1 ? "" : "s") + " not in Cloudbeds yet</span>");
+      if (s.clashes_upcoming) html.push('<span class="cb-warn" title="Stays where Cloudbeds\' room couldn\'t be shown here — fix the room assignment in Cloudbeds">' + s.clashes_upcoming + " room clash" + (s.clashes_upcoming === 1 ? "" : "es") + "</span>");
+      var le = s.last_error;
+      if (le && le.at && (!ran || new Date(le.at) >= new Date(ran) - 60000) && Date.now() - new Date(le.at).getTime() < 3600e3) {
+        html.push('<span class="cb-warn" title="' + esc((le.errors || []).join("\n")) + '">last sync had errors</span>');
+      }
+      html.push('<button type="button" class="btn-sm ghost" id="cbSyncNow">Sync now</button>');
+      cbBar.innerHTML = html.join(" · ");
+      document.getElementById("cbSyncNow").addEventListener("click", function (e) {
+        e.target.disabled = true; e.target.textContent = "Syncing…";
+        sb.rpc("cb_request_sync").then(function () { setTimeout(function () { loadCbStatus(); loadBookings(); }, 12000); });
+      });
+      // new data from Cloudbeds → refresh the list (unless a form is open)
+      if (ran && cbLastRun && ran !== cbLastRun && (lp.applied || lp.pushed) && !document.querySelector(".modal-backdrop.open")) loadBookings();
+      cbLastRun = ran;
+      if (wasOn !== cbPushOn && allRows.length) render();
+    });
+  }
+  setInterval(function () { if (document.visibilityState === "visible" && allRows.length) loadCbStatus(); }, 60000);
+
+  // Shared with staff-villas.js (overnight bookings, villa calendar).
+  window.VBRDash = {
+    renderEmailLog: renderEmailLog,
+    sb: sb,
+    rows: function () { return allRows; },
+    reload: loadBookings,
+    render: render,
+    staffName: function () { return currentStaffName; },
+    staffLabel: staffLabelForLogEmail,
+    openLog: openLogModal,
+    villaRows: villaRows, billRow: billRow,
+    esc: esc, peso: peso, fmtDate: fmtDate, fmtDateTime: fmtDateTime,
+    proofLinks: proofLinks, openSignedUrl: openSignedUrl, uploadProof: uploadProof, attachProof: attachProof,
+    cbUrl: cbUrl, loadCbStatus: loadCbStatus, renderStatusStory: renderStatusStory,
+    STATUS_LABELS: STATUS_LABELS, SOURCE_LABELS: SOURCE_LABELS,
+    TYPE_LABELS: TYPE_LABELS, statusLabel: statusLabel, villaStatusKey: villaStatusKey, openModal: openModal,
+    openBreakdown: openBreakdown, payMethodName: payMethodName, listRows: function () { return renderQueue; },
+    section: function () { return activeSection; }, sort: function () { return { field: sortField, dir: sortDir }; }, cabanaLabel: function (id) { return cabanasById[id] ? cabanasById[id].label : ""; },
+    cabanas: function () { return cabanasList; }, cabanaById: function (id) { return cabanasById[id]; },
+    cabKind: cabKind, cabShort: cabShort, countsOf: countsOf, cabanasFreeOn: cabanasFreeOn, blocksForDate: blocksForDate,
+    cabanaListText: cabanaListText, releasesCabanas: releasesCabanas, isVillaRow: isVillaRow,
+    stock: function () { return cabanaStock; }, setStock: function (s) { cabanaStock = s; },
+  };
+})();

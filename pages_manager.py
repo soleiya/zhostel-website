@@ -1,0 +1,145 @@
+# -*- coding: utf-8 -*-
+"""Manager summary — manager/index.html.
+A read-only, phone-friendly overview of who's coming and what they booked, by
+day / week / month. Not linked from the site. The passcode is checked by the
+database (manager_summary(), part of the VBR engine copied into the Z Hostel
+database), never here. The page script is assets/js/staff-manager.js (no inline
+scripts: the site CSP is script-src 'self')."""
+
+import hashlib
+import os
+
+ROOT = os.path.dirname(os.path.abspath(__file__))
+
+
+def v(rel):
+    with open(os.path.join(ROOT, rel), "rb") as fh:
+        return hashlib.sha1(fh.read()).hexdigest()[:10]
+
+
+html = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Manager Summary · Z Hostel</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<link rel="icon" href="/wp-content/uploads/2018/08/Logo-150x150.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Raleway:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/css/staff.css?v=__V_CSS__">
+<style>
+  body { background: var(--sand); min-height: 100vh; margin: 0; }
+  .mg { max-width: 1100px; margin: 0 auto; padding: 18px 16px 70px; }
+  .mg-top { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+  .mg-top img { width: 34px; height: 34px; background: var(--yellow); border-radius: 8px; }
+  .mg-top h1 { font-family: var(--font-display); font-weight: 600; font-size: 1.25rem; margin: 0; line-height: 1.1; }
+  .mg-top small { display: block; font-size: .74rem; color: var(--ink-soft); font-family: var(--font-body); font-weight: 600; }
+  .mg-top .out { margin-left: auto; border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 999px; padding: 6px 12px; font: 600 .78rem var(--font-body); cursor: pointer; }
+
+  /* passcode */
+  #lock { max-width: 340px; margin: 12vh auto 0; text-align: center; background: var(--surface); border: 1px solid var(--line); border-radius: 18px; padding: 30px 24px; }
+  #lock img { width: 52px; margin: 0 auto; background: var(--yellow); border-radius: 10px; }
+  #lock h2 { font-family: var(--font-display); font-weight: 600; margin: 10px 0 4px; font-size: 1.35rem; }
+  #lock p { color: var(--ink-soft); font-size: .88rem; margin: 0 0 18px; }
+  #code { width: 100%; box-sizing: border-box; text-align: center; font: 700 1.6rem var(--font-body); letter-spacing: .5em; padding: 12px 10px 12px 22px; border: 1px solid var(--line); border-radius: 12px; background: var(--sand); color: var(--ink); }
+  #lock button { margin-top: 14px; width: 100%; border: 0; border-radius: 999px; background: var(--lagoon); color: #fff; font: 700 .95rem var(--font-body); padding: 12px; cursor: pointer; }
+  #lockErr { color: #b4513f; font-size: .85rem; font-weight: 600; min-height: 1.2em; margin-top: 10px; }
+
+  /* controls */
+  .ctl { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 14px; }
+  .seg { display: inline-flex; background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 3px; }
+  .seg button { border: 0; background: none; color: var(--ink-soft); font: 700 .85rem var(--font-body); padding: 7px 16px; border-radius: 999px; cursor: pointer; }
+  .seg button.on { background: var(--lagoon); color: #fff; }
+  .nav { display: inline-flex; align-items: center; gap: 6px; }
+  .nav button { border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 999px; min-width: 36px; height: 36px; font: 700 .9rem var(--font-body); cursor: pointer; padding: 0 12px; }
+  .range { font-family: var(--font-display); font-size: 1.15rem; font-weight: 600; flex: 1 1 100%; order: -1; }
+  @media (min-width: 700px) { .range { flex: 1 1 auto; order: 0; } }
+
+  /* KPIs */
+  .kpis { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-bottom: 18px; }
+  @media (min-width: 700px) { .kpis { grid-template-columns: repeat(6, 1fr); } }
+  .kpi { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
+  .kpi span { display: block; font-size: .66rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-soft); }
+  .kpi b { display: block; font-size: 1.3rem; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .kpi em { font-style: normal; font-size: .74rem; color: var(--ink-soft); }
+
+  /* days & bookings */
+  .day { margin-bottom: 18px; }
+  .day-h { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; padding: 6px 2px; border-bottom: 2px solid var(--line); margin-bottom: 8px; position: sticky; top: 0; background: var(--sand); z-index: 2; }
+  .day-h h3 { font-family: var(--font-display); font-weight: 600; font-size: 1.05rem; margin: 0; }
+  .day-h .sum { font-size: .78rem; color: var(--ink-soft); font-weight: 600; }
+  .grp { font-size: .68rem; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; color: var(--ink-soft); margin: 10px 2px 6px; }
+  .bk { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-bottom: 8px; }
+  .bk-1 { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  .bk-1 b { font-size: .98rem; }
+  .bk-1 .code { font-size: .72rem; color: var(--ink-soft); font-weight: 700; }
+  .pill { font-size: .68rem; font-weight: 800; border-radius: 999px; padding: 2px 8px; background: var(--sand-deep); color: var(--ink-soft); }
+  .pill.ok { background: var(--lagoon-tint); color: var(--lagoon-deep); }
+  .pill.wait { background: #f6e6cf; color: #94591c; }
+  .pill.in { background: #e3e9f6; color: #34508a; }
+  .bk-amt { margin-left: auto; font-size: .8rem; font-weight: 700; white-space: nowrap; }
+  .bk-amt small { font-weight: 600; color: var(--ink-soft); }
+  .bk-party { font-size: .84rem; margin-top: 3px; }
+  .bk-names { font-size: .8rem; color: var(--ink-soft); margin-top: 2px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+  .chips span { font-size: .74rem; font-weight: 600; background: var(--sand); border: 1px solid var(--line); border-radius: 7px; padding: 2px 8px; }
+  .chips span.k { background: var(--lagoon-tint); border-color: transparent; color: var(--lagoon-deep); }
+  .empty { text-align: center; color: var(--ink-soft); padding: 40px 10px; background: var(--surface); border: 1px dashed var(--line); border-radius: 14px; }
+  .note { font-size: .76rem; color: var(--ink-soft); margin-top: 20px; text-align: center; }
+  .compact .bk-names, .compact .chips span:not(.k) { display: none; }
+  .compact .bk { padding: 8px 10px; }
+  #loading { color: var(--ink-soft); font-size: .85rem; padding: 20px 2px; }
+</style>
+</head>
+<body>
+<div class="mg">
+  <div id="lock">
+    <img src="/wp-content/uploads/2018/08/Logo-150x150.png" alt="Z Hostel">
+    <h2>Manager Summary</h2>
+    <p>Enter the passcode to view bookings.</p>
+    <form id="lockForm" autocomplete="off">
+      <input id="code" type="password" inputmode="numeric" maxlength="12" aria-label="Passcode" autofocus>
+      <button type="submit" id="lockBtn">View summary</button>
+    </form>
+    <div id="lockErr"></div>
+  </div>
+
+  <div id="app" hidden>
+    <div class="mg-top">
+      <img src="/wp-content/uploads/2018/08/Logo-150x150.png" alt="Z Hostel">
+      <h1>Manager Summary<small>Z Hostel · read-only</small></h1>
+      <button class="out" id="outBtn" type="button">Lock</button>
+    </div>
+    <div class="ctl">
+      <div class="seg" role="tablist">
+        <button type="button" data-v="day" class="on">Day</button>
+        <button type="button" data-v="week">Week</button>
+        <button type="button" data-v="month">Month</button>
+      </div>
+      <div class="range" id="rangeLbl"></div>
+      <div class="nav">
+        <button type="button" id="prevBtn" aria-label="Previous">&lsaquo;</button>
+        <button type="button" id="todayBtn">Today</button>
+        <button type="button" id="nextBtn" aria-label="Next">&rsaquo;</button>
+      </div>
+    </div>
+    <div class="kpis" id="kpis"></div>
+    <div id="list"><div id="loading">Loading…</div></div>
+    <p class="note">Cancelled and expired bookings are not shown. Stays appear on every night they're in-house. Amounts for Cloudbeds bookings come from Cloudbeds.</p>
+  </div>
+</div>
+
+<script src="../assets/js/config.js?v=__V_CFG__"></script>
+<script src="../assets/js/staff-manager.js?v=__V_MGR__"></script>
+</body>
+</html>
+"""
+
+html = (html.replace("__V_CSS__", v("assets/css/staff.css")).replace("__V_CFG__", v("assets/js/config.js"))
+            .replace("__V_MGR__", v("assets/js/staff-manager.js")))
+os.makedirs(os.path.join(ROOT, "manager"), exist_ok=True)
+with open(os.path.join(ROOT, "manager", "index.html"), "w", encoding="utf-8") as f:
+    f.write(html)
+print("wrote manager/index.html")

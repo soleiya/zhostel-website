@@ -1,0 +1,179 @@
+// Shared visual cabana map: fetches cabana inventory + per-date availability
+// from Supabase and renders it as clickable hotspots laid directly over the
+// resort's illustrated Day Trip Area map (assets/images/cabana-map-bg.jpg)
+// — a seat-plan-style picker where a guest can see exactly where a cabana
+// sits relative to the beach, pool, and pavilion. Used by the public booking
+// page (assets/js/booking.js) and, in a read-only form, by the staff
+// dashboard's availability panel.
+(function (global) {
+  // Position of every real cabana on cabana-map-bg.jpg, as percentages of
+  // the image's rendered width/height — pixel-detected against the artwork
+  // (color-thresholded + contour-matched per tile, not eyeballed), so it
+  // stays accurate regardless of display size. Same 49 cabanas as before,
+  // just repositioned to match the resort's updated map artwork.
+  var CABANA_MAP_LAYOUT = [{"section":"A","cabana_type":"lounge_cabana","number":1,"left":59.255,"top":51.827,"width":3.125,"height":2.5,"row_index":3,"col_index":0},{"section":"A","cabana_type":"dining_cabana","number":2,"left":63.942,"top":51.827,"width":3.125,"height":2.5,"row_index":3,"col_index":1},{"section":"A","cabana_type":"lounge_cabana","number":3,"left":68.75,"top":51.827,"width":3.125,"height":2.5,"row_index":3,"col_index":2},{"section":"A","cabana_type":"dining_cabana","number":4,"left":73.438,"top":51.827,"width":3.125,"height":2.5,"row_index":3,"col_index":3},{"section":"A","cabana_type":"lounge_cabana","number":5,"left":78.365,"top":51.827,"width":3.125,"height":2.5,"row_index":3,"col_index":4},{"section":"A","cabana_type":"dining_cabana","number":6,"left":83.053,"top":51.827,"width":3.005,"height":2.5,"row_index":3,"col_index":5},{"section":"A","cabana_type":"lounge_cabana","number":7,"left":87.74,"top":51.827,"width":2.885,"height":2.5,"row_index":3,"col_index":6},{"section":"A","cabana_type":"dining_cabana","number":8,"left":59.255,"top":45.962,"width":3.245,"height":2.692,"row_index":2,"col_index":0},{"section":"A","cabana_type":"dining_cabana","number":9,"left":64.062,"top":45.769,"width":2.885,"height":2.885,"row_index":2,"col_index":1},{"section":"A","cabana_type":"dining_cabana","number":10,"left":68.99,"top":46.058,"width":3.365,"height":2.596,"row_index":2,"col_index":2},{"section":"A","cabana_type":"dining_cabana","number":11,"left":73.918,"top":45.962,"width":3.365,"height":2.692,"row_index":2,"col_index":3},{"section":"A","cabana_type":"dining_cabana","number":12,"left":78.726,"top":45.962,"width":3.245,"height":2.692,"row_index":2,"col_index":4},{"section":"A","cabana_type":"lounge_cabana","number":13,"left":83.413,"top":46.058,"width":2.885,"height":2.5,"row_index":2,"col_index":5},{"section":"A","cabana_type":"dining_cabana","number":14,"left":87.981,"top":46.154,"width":3.125,"height":2.5,"row_index":2,"col_index":6},{"section":"A","cabana_type":"dining_cabana","number":15,"left":59.135,"top":40.096,"width":3.005,"height":2.404,"row_index":1,"col_index":0},{"section":"A","cabana_type":"dining_cabana","number":16,"left":64.183,"top":40.096,"width":3.125,"height":2.404,"row_index":1,"col_index":1},{"section":"A","cabana_type":"dining_cabana","number":17,"left":68.87,"top":40.096,"width":3.365,"height":2.5,"row_index":1,"col_index":2},{"section":"A","cabana_type":"dining_cabana","number":18,"left":73.918,"top":40.096,"width":3.245,"height":2.404,"row_index":1,"col_index":3},{"section":"A","cabana_type":"dining_cabana","number":19,"left":78.726,"top":40.0,"width":3.245,"height":2.404,"row_index":1,"col_index":4},{"section":"A","cabana_type":"dining_cabana","number":20,"left":83.173,"top":40.096,"width":3.245,"height":2.404,"row_index":1,"col_index":5},{"section":"A","cabana_type":"dining_cabana","number":21,"left":87.861,"top":40.096,"width":3.486,"height":2.5,"row_index":1,"col_index":6},{"section":"A","cabana_type":"dining_cabana","number":22,"left":69.231,"top":35.577,"width":2.885,"height":2.404,"row_index":0,"col_index":0},{"section":"A","cabana_type":"dining_cabana","number":23,"left":73.918,"top":35.577,"width":3.245,"height":2.404,"row_index":0,"col_index":1},{"section":"A","cabana_type":"dining_cabana","number":24,"left":78.846,"top":35.577,"width":3.125,"height":2.404,"row_index":0,"col_index":2},{"section":"A","cabana_type":"dining_cabana","number":25,"left":83.413,"top":35.577,"width":3.245,"height":2.404,"row_index":0,"col_index":3},{"section":"A","cabana_type":"dining_cabana","number":26,"left":87.74,"top":35.577,"width":3.606,"height":2.404,"row_index":0,"col_index":4},{"section":"B","cabana_type":"lounge_cabana","number":1,"left":8.053,"top":51.827,"width":3.125,"height":2.692,"row_index":2,"col_index":0},{"section":"B","cabana_type":"dining_cabana","number":2,"left":12.62,"top":51.827,"width":3.125,"height":2.5,"row_index":2,"col_index":1},{"section":"B","cabana_type":"dining_cabana","number":3,"left":17.188,"top":51.827,"width":3.125,"height":2.5,"row_index":2,"col_index":2},{"section":"B","cabana_type":"dining_cabana","number":4,"left":21.635,"top":51.827,"width":2.885,"height":2.5,"row_index":2,"col_index":3},{"section":"B","cabana_type":"dining_cabana","number":5,"left":42.788,"top":51.827,"width":3.365,"height":2.596,"row_index":2,"col_index":6},{"section":"B","cabana_type":"dining_cabana","number":6,"left":6.01,"top":46.154,"width":3.125,"height":2.5,"row_index":1,"col_index":0},{"section":"B","cabana_type":"dining_cabana","number":7,"left":10.577,"top":46.154,"width":3.125,"height":2.596,"row_index":1,"col_index":1},{"section":"B","cabana_type":"dining_cabana","number":8,"left":15.024,"top":45.865,"width":3.245,"height":2.788,"row_index":1,"col_index":2},{"section":"B","cabana_type":"dining_cabana","number":9,"left":19.712,"top":45.962,"width":3.245,"height":2.692,"row_index":1,"col_index":3},{"section":"B","cabana_type":"dining_cabana","number":10,"left":24.279,"top":45.962,"width":3.365,"height":2.692,"row_index":1,"col_index":4},{"section":"B","cabana_type":"dining_cabana","number":11,"left":28.966,"top":45.962,"width":3.245,"height":2.692,"row_index":1,"col_index":5},{"section":"B","cabana_type":"dining_cabana","number":12,"left":33.293,"top":45.962,"width":3.486,"height":2.596,"row_index":1,"col_index":6},{"section":"B","cabana_type":"dining_cabana","number":13,"left":37.74,"top":45.962,"width":3.125,"height":2.692,"row_index":1,"col_index":7},{"section":"B","cabana_type":"dining_cabana","number":14,"left":42.668,"top":45.962,"width":3.245,"height":2.596,"row_index":1,"col_index":8},{"section":"B","cabana_type":"dining_cabana","number":15,"left":5.889,"top":40.0,"width":3.365,"height":2.596,"row_index":0,"col_index":0},{"section":"B","cabana_type":"dining_cabana","number":16,"left":10.457,"top":40.0,"width":3.245,"height":2.5,"row_index":0,"col_index":1},{"section":"B","cabana_type":"dining_cabana","number":17,"left":14.904,"top":40.096,"width":3.245,"height":2.5,"row_index":0,"col_index":2},{"section":"B","cabana_type":"dining_cabana","number":18,"left":19.471,"top":40.0,"width":3.606,"height":2.596,"row_index":0,"col_index":3},{"section":"B","cabana_type":"dining_cabana","number":19,"left":24.279,"top":40.0,"width":3.486,"height":2.5,"row_index":0,"col_index":4},{"section":"B","cabana_type":"dining_cabana","number":20,"left":28.846,"top":40.0,"width":3.486,"height":2.404,"row_index":0,"col_index":5},{"section":"B","cabana_type":"dining_cabana","number":21,"left":33.293,"top":40.0,"width":3.365,"height":2.5,"row_index":0,"col_index":6},{"section":"B","cabana_type":"dining_cabana","number":22,"left":37.74,"top":40.0,"width":3.365,"height":2.5,"row_index":0,"col_index":7},{"section":"B","cabana_type":"dining_cabana","number":23,"left":42.668,"top":40.0,"width":3.245,"height":2.5,"row_index":0,"col_index":8}];
+
+  // v3 (Oct 2026): same artwork, renumbered — each section now counts 1, 2, 3…
+  // across lounge and dining cabanas together, front row first, left to right.
+  // Lounge tiles amber, dining tiles teal.
+  var MAP_IMAGE_SRC_DEFAULT = "../assets/images/cabana-map-bg-v3.jpg";
+
+  var TYPE_LABELS = {
+    dining_cabana: "Dining Cabana",
+    lounge_cabana: "Lounge Cabana",
+  };
+
+  var cabanaCache = null;
+
+  function loadCabanas(sb) {
+    if (cabanaCache) return Promise.resolve(cabanaCache);
+    return sb
+      .from("cabanas")
+      .select("*")
+      .order("section", { ascending: true })
+      .order("row_index", { ascending: true })
+      .order("col_index", { ascending: true })
+      .then(function (res) {
+        if (res.error) throw res.error;
+        cabanaCache = res.data || [];
+        return cabanaCache;
+      });
+  }
+
+  // Returns a Set of cabana_id strings that can't be booked for the given
+  // YYYY-MM-DD date: booked (not declined/expired) or blocked by staff.
+  // The public view never says which — guests just see "not available".
+  function loadHolds(sb, dateStr) {
+    if (!dateStr) return Promise.resolve(new Set());
+    return sb
+      .from("public_cabana_holds")
+      .select("cabana_id")
+      .eq("check_in", dateStr)
+      .then(function (res) {
+        if (res.error) throw res.error;
+        var set = new Set();
+        (res.data || []).forEach(function (row) {
+          if (row.cabana_id) set.add(row.cabana_id);
+        });
+        return set;
+      });
+  }
+
+  function layoutFor(cabana) {
+    for (var i = 0; i < CABANA_MAP_LAYOUT.length; i++) {
+      var L = CABANA_MAP_LAYOUT[i];
+      // Matched by grid position (row/col never change), not by number, so
+      // the map stays right even while cabanas are being renumbered.
+      if (L.section === cabana.section && L.row_index === cabana.row_index && L.col_index === cabana.col_index) {
+        return L;
+      }
+    }
+    return null;
+  }
+
+  // opts: { cabanas, heldSet, heldInfo, selectedIds, onSelect(cabana), imageSrc, crop }
+  // crop (optional): { top, bottom } as fractions of the image height — shows
+  // only that horizontal band (e.g. just the cabana rows) instead of the
+  // whole illustrated map. Used by the staff booking form to save space.
+  // clickableHeld (optional): held tiles stay clickable (staff Cabana Map
+  // planner, for moving a party). highlightId: one tile drawn as "picked up".
+  // heldInfo (optional): { [cabana_id]: "extra text for the tile's tooltip" }
+  // — used by the staff dashboard to show who's holding a cabana; the public
+  // booking page omits it and gets the generic "not available" tooltip.
+  // blockedSet / blockedInfo (optional, staff only): cabanas staff have
+  // blocked (under repair, unavailable…) — drawn hatched, with the reason in
+  // the tooltip. clickableBlocked lets the planner click them to unblock.
+  // selectedIds (optional): a Set/array of cabana ids to show as selected —
+  // a booking can include more than one cabana, so this is plural. onSelect
+  // fires on every click (including on an already-selected tile, so the
+  // caller can toggle it back off); held tiles never fire onSelect.
+  function render(container, opts) {
+    var cabanas = opts.cabanas || [];
+    var heldSet = opts.heldSet || new Set();
+    var heldInfo = opts.heldInfo || null;
+    var blockedSet = opts.blockedSet || new Set();
+    var blockedInfo = opts.blockedInfo || {};
+    var selectedIds = opts.selectedIds ? new Set(opts.selectedIds) : new Set();
+    var onSelect = opts.onSelect || function () {};
+    var imageSrc = opts.imageSrc || MAP_IMAGE_SRC_DEFAULT;
+
+    container.innerHTML = "";
+    container.classList.add("cabana-map");
+
+    var stage = document.createElement("div");
+    stage.className = "cabana-map-stage";
+    var layer = stage; // where the image + hotspots go
+    if (opts.crop) {
+      // The image is 832x1040 (ratio 1.25). The outer box keeps the band's
+      // aspect ratio; the inner layer is the full map, shifted up.
+      var band = opts.crop.bottom - opts.crop.top;
+      stage.style.paddingTop = (band * 1.25 * 100) + "%";
+      layer = document.createElement("div");
+      layer.className = "cabana-map-layer";
+      layer.style.position = "absolute";
+      layer.style.left = "0";
+      layer.style.width = "100%";
+      layer.style.top = (-(opts.crop.top / band) * 100) + "%";
+      stage.appendChild(layer);
+    }
+
+    var img = document.createElement("img");
+    img.className = "cabana-map-bg";
+    img.src = imageSrc;
+    img.alt = "Map of Section A and Section B cabanas at Z Hostel's Day Trip Area";
+    img.draggable = false;
+    layer.appendChild(img);
+
+    var skipped = 0;
+    cabanas.forEach(function (c) {
+      var layout = layoutFor(c);
+      if (!layout) {
+        skipped++;
+        return;
+      }
+      var isBlocked = blockedSet.has(c.id);
+      var isHeld = heldSet.has(c.id) && !isBlocked;
+      var isSelected = selectedIds.has(c.id) || (opts.highlightId && opts.highlightId === c.id);
+      var tile = document.createElement("button");
+      tile.type = "button";
+      tile.className =
+        "cabana-hotspot cabana-" + c.cabana_type + (isHeld ? " is-held" : "") + (isBlocked ? " is-blocked" : "") + (isSelected ? " is-selected" : "");
+      tile.style.left = layout.left + "%";
+      tile.style.top = layout.top + "%";
+      tile.style.width = layout.width + "%";
+      tile.style.height = layout.height + "%";
+      var heldNote = isHeld ? (heldInfo && heldInfo[c.id] ? heldInfo[c.id] : "not available on this date") : null;
+      tile.title = c.label + (isBlocked ? " — " + (blockedInfo[c.id] || "blocked") : isHeld ? " — " + heldNote : " — available");
+      tile.disabled = (isHeld && !opts.clickableHeld) || (isBlocked && !opts.clickableBlocked);
+      tile.setAttribute("aria-pressed", isSelected ? "true" : "false");
+      tile.setAttribute("aria-label", c.label);
+      tile.addEventListener("click", function () {
+        onSelect(c);
+      });
+      layer.appendChild(tile);
+    });
+
+    container.appendChild(stage);
+
+    var legend = document.createElement("div");
+    legend.className = "cabana-legend";
+    legend.innerHTML =
+      '<span><i class="cabana-swatch cabana-dining_cabana"></i> Dining Cabana</span>' +
+      '<span><i class="cabana-swatch cabana-lounge_cabana"></i> Lounge Cabana</span>' +
+      '<span><i class="cabana-swatch is-held"></i> ' + (heldInfo ? "Already booked" : "Not available") + '</span>' +
+      (opts.blockedSet ? '<span><i class="cabana-swatch is-blocked"></i> Blocked by staff</span>' : "") +
+      '<span><i class="cabana-swatch is-selected"></i> ' + (opts.selectedLabel || "Your selection") + '</span>';
+    container.appendChild(legend);
+
+    if (skipped && global.console) {
+      console.warn("[VBRCabanaMap] " + skipped + " cabana(s) from the database have no known position on the map image.");
+    }
+  }
+
+  global.VBRCabanaMap = {
+    TYPE_LABELS: TYPE_LABELS,
+    loadCabanas: loadCabanas,
+    loadHolds: loadHolds,
+    render: render,
+  };
+})(window);

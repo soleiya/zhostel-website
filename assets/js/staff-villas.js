@@ -1,0 +1,861 @@
+/* ==========================================================================
+   Staff dashboard — overnight villa bookings
+   --------------------------------------------------------------------------
+   * Room booking modal: create / edit an overnight stay (dates, villas,
+     guest list, pets, discount, payment proof, guest email).
+     Saved through staff_save_overnight() — one atomic step, priced with
+     quote_overnight(), so it always matches the website and the emails.
+   * Room Calendar: all 18 units across 2–8 weeks; click a booking to open
+     it, click an empty night to start one; staff blocks; peak dates.
+   Needs staff-dashboard.js (window.VBRDash) loaded first.
+   ========================================================================== */
+(function () {
+  var D = window.VBRDash;
+  if (!D) return;
+  var sb = D.sb, esc = D.esc, peso = D.peso, fmtDate = D.fmtDate;
+  function $(id) { return document.getElementById(id); }
+
+  var villas = [], villasById = {};
+  var addOns = [], addonQty = {};
+  var AGE = [["adult", "Adult (13+)"], ["senior", "Senior / PWD"], ["child_6_12", "Child 6–12"], ["child_0_5", "Child 0–5 (free)"]];
+  var EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+  function todayStr() { return new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Manila" }); }
+  function addDays(s, n) { var d = new Date(s + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
+  function diffDays(a, b) { return Math.round((new Date(b + "T00:00:00Z") - new Date(a + "T00:00:00Z")) / 86400000); }
+  function dow(s) { return new Date(s + "T00:00:00Z").getUTCDay(); }
+
+  function init() {
+    sb.from("add_ons").select("*").eq("active", true).not("price", "is", null).order("sort").then(function (res) { addOns = res.error ? [] : (res.data || []); });
+    return sb.from("villas").select("*").eq("active", true).order("sort").then(function (res) {
+      if (res.error) throw res.error;
+      villas = res.data || [];
+      villasById = {};
+      villas.forEach(function (v) { villasById[v.id] = v; });
+      fillBlockSelect();
+    });
+  }
+  function labelsFor(r) {
+    return (r.booking_villas || []).map(function (bv) { return villasById[bv.villa_id]; }).filter(Boolean)
+      .sort(function (a, b) { return a.sort - b.sort; })
+      .map(function (v) {
+        var prov = (r.booking_villas || []).some(function (bv) { return bv.villa_id === v.id && bv.provisional; });
+        return v.unit_label + " · " + v.room_type_name.replace(" Room", "") + (prov ? " (held — no room assigned in Cloudbeds yet)" : "");
+      });
+  }
+
+  // ======================================================================
+  // Booking modal
+  // ======================================================================
+  var backdrop = $("villaModalBackdrop"), form = $("villaForm"), errEl = $("vError"), saveBtn = $("vSave");
+  var editing = null;          // the row being edited, or null
+  var picked = [];             // villa ids
+  var guests = [];             // companions [{name, age_group}]
+  var holds = [];              // active booking_villas overlapping the chosen dates
+  var lastQuote = null, quoteSeq = 0, quoteTimer = null;
+  // Editing an existing booking keeps its saved total (Cloudbeds / OTA /
+  // agreed prices) until something that affects the price is changed —
+  // same rule as the Day Trip form.
+  var keepSaved = false, openSig = null, notifyTouched = false;
+  function priceSig() {
+    var c = counts();
+    return [$("vIn").value, $("vOut").value, picked.slice().sort().join(","), c.adults, c.seniors, c.k612, c.k05, $("vPets").value,
+      JSON.stringify(addOnPayload()), codeVal(), $("vDiscType").value, $("vDiscValue").value].join("|");
+  }
+  function keeping() { return keepSaved && editing && openSig !== null && priceSig() === openSig; }
+
+  // Cloudbeds is the master for villas: once a stay is in Cloudbeds — made
+  // there, or booked here and sent there — it's changed in Cloudbeds ("all").
+  // Payments are still recorded here (Payments), and reach the Cloudbeds folio.
+  var cbLock = "none";
+  function applyCbLock(r) {
+    Array.prototype.forEach.call(form.querySelectorAll("[data-cblocked]"), function (el) { el.disabled = false; el.removeAttribute("data-cblocked"); });
+    cbLock = !editing ? "none" : (r.cb_owned || r.cb_reservation_id) ? "all" : "none";
+    var lockEl = function (el) { if (el && !el.disabled) { el.disabled = true; el.setAttribute("data-cblocked", "1"); } };
+    if (cbLock === "dates") { lockEl($("vIn")); lockEl($("vOut")); }
+    if (cbLock === "all") {
+      Array.prototype.forEach.call(form.querySelectorAll("input, select, textarea, button"), function (el) {
+        if (el.id === "vStaffNotes" || el.id === "vCancel" || el.id === "vSave" || el.id === "vLogBtn" || el.closest(".mail-panel") || el.closest("#vNoPayCancel") || el.closest("#vCx")) return;
+        // companions' names can still be corrected here (not their age group — that's pricing, done in Cloudbeds)
+        if (el.closest("#vGuests") && el.tagName === "INPUT" && !el.readOnly) return;
+        lockEl(el);
+      });
+      lockEl($("vNotify"));
+    }
+    var url = D.cbUrl ? D.cbUrl(r) : null;
+    var link = url ? ' <a class="cb-link" data-cb="' + esc(r.cb_reservation_id) + '" href="' + url + '" target="_blank" rel="noopener">Open in Cloudbeds ↗</a> <small>(copies #' + esc(r.cb_reservation_id) + " for its search box)</small>" : "";
+    var banner = $("vCbBanner");
+    if (banner) {
+      banner.hidden = cbLock === "none";
+      banner.innerHTML = r.cb_owned
+        ? "<b>Booked in Cloudbeds.</b> Change dates, rooms, guests, price or status in Cloudbeds — this page updates within a few minutes. Here you can add staff notes." + link
+        : "<b>Booked on the website · now in Cloudbeds (#" + esc(r.cb_reservation_id || "") + ").</b> Cloudbeds is the master from here: change dates, rooms, guests, status or cancel in Cloudbeds — this page follows within a few minutes. Record payments with <b>Payments</b>; verified payments are added to the Cloudbeds folio. The guest got the quotation from the website — Cloudbeds sends the emails from here." + link;
+    }
+    saveBtn.textContent = cbLock === "all" ? "Save Notes & Names" : saveBtn.textContent;
+  }
+
+  function showErr(m) { errEl.textContent = m; errEl.style.display = "block"; saveBtn.disabled = false; }
+
+  function openBooking(row, preset) {
+    form.reset();
+    errEl.style.display = "none";
+    editing = row && row.id ? row : null;
+    preset = preset || {};
+    var r = editing || {};
+    if (D.renderEmailLog) D.renderEmailLog("vMailLogField", "vMailLog", editing ? r.id : null);
+    renderNoPayCancel(editing);
+    renderCancel(editing);
+    $("villaModalTitle").textContent = editing ? "Edit Room Booking" + (r.order_code ? " · " + r.order_code : "") : "New Room Booking";
+    $("villaModalSub").textContent = editing ? "Changes are saved to the activity log under your name." : "Overnight stay in one or more rooms. Priced from the same rate sheet as the website.";
+    saveBtn.textContent = editing ? "Save Changes" : "Save Booking";
+    $("vChannel").value = r.source || "phone";
+    $("vStatus").value = editing ? (r.status || "pending") : "pending";
+    // a new booking always starts as Confirmation Pending, like creating one in
+    // Cloudbeds; payment / confirmation (here or in Cloudbeds) move it on
+    $("vStatus").disabled = !editing;
+    $("vStatusLock").hidden = !!editing;
+    $("vBookedBy").value = editing ? (r.booked_by || "—") : (D.staffName() || "");
+    $("vName").value = r.guest_name || "";
+    // v62: staff can correct the guest name (logged); a Cloudbeds reservation's comes from Cloudbeds
+    $("vName").readOnly = !!(editing && r.cb_reservation_id);
+    $("vNameLock").hidden = !(editing && r.cb_reservation_id);
+    $("vPhone").value = r.guest_phone || "";
+    $("vEmail").value = r.guest_email || "";
+    $("vCountry").value = r.country || "Philippines";
+    $("vIn").value = r.check_in || preset.check_in || "";
+    $("vOut").value = r.check_out || preset.check_out || ($("vIn").value ? addDays($("vIn").value, 1) : "");
+    $("vPrimarySenior").checked = !!r.primary_is_senior;
+    $("vPets").value = r.pet_count || 0;
+    $("vDiscType").value = r.discount_type || "";
+    $("vDiscValue").value = r.discount_value != null ? r.discount_value : "";
+    $("vDiscReason").value = r.discount_reason || "";
+    $("vNotes").value = r.notes || "";
+    $("vStaffNotes").value = r.staff_notes || "";
+    $("vOverCap").checked = false;
+    picked = editing ? (r.booking_villas || []).map(function (bv) { return bv.villa_id; }) : (preset.villa_id ? [preset.villa_id] : []);
+    addonQty = {};
+    (Array.isArray(r.add_ons) ? r.add_ons : []).forEach(function (a) { addonQty[a.slug] = a.qty; });
+    // the 5% Convenience Discount is gone for new bookings; an old booking keeps it
+    keepOnline = !!editing && Number(r.online_discount) > 0;
+    $("vCode").value = editing ? (r.discount_code || "") : "";
+    renderAddOns();
+    guests = Array.isArray(r.companions) ? r.companions.map(function (c) { return { name: c.name || "", age_group: c.age_group || "adult" }; }) : [];
+    // Older / imported bookings may have head-counts but no names: fill blank rows.
+    if (editing) {
+      var known = guests.length + 1, total = (r.adults || 0) + (r.children_6_12 || 0) + (r.children_0_5 || 0);
+      var extraA = Math.max(0, (r.adults || 0) - 1 - guests.filter(function (g) { return g.age_group === "adult" || g.age_group === "senior"; }).length);
+      var extra612 = Math.max(0, (r.children_6_12 || 0) - guests.filter(function (g) { return g.age_group === "child_6_12"; }).length);
+      var extra05 = Math.max(0, (r.children_0_5 || 0) - guests.filter(function (g) { return g.age_group === "child_0_5"; }).length);
+      if (total > known) {
+        for (var i = 0; i < extraA; i++) guests.push({ name: "", age_group: "adult" });
+        for (i = 0; i < extra612; i++) guests.push({ name: "", age_group: "child_6_12" });
+        for (i = 0; i < extra05; i++) guests.push({ name: "", age_group: "child_0_5" });
+      }
+    }
+    keepSaved = !!editing && r.total_amount != null;
+    openSig = null;
+    $("vPayField").style.display = editing ? "block" : "none";
+    $("vLogBtn").hidden = !editing;
+    renderPayExisting(r);
+    $("vNotify").checked = !editing ? false : true;
+    notifyTouched = false;
+    renderGuests();
+    onDates();
+    var mp = mailPanel();
+    if (mp) mp.reset();
+    applyCbLock(r);
+    if (D.renderStatusStory) D.renderStatusStory(editing, "vStatus");
+    if (!editing) $("villaModalSub").textContent = "Overnight stay in one or more rooms. Priced from the same rate sheet as the website. Saved bookings are created in Cloudbeds automatically, on the same room.";
+    backdrop.classList.add("open");
+  }
+  function close() { backdrop.classList.remove("open"); editing = null; }
+  $("vCancel").addEventListener("click", close);
+  backdrop.addEventListener("click", function (e) { if (e.target === backdrop) close(); });
+  $("addVillaBtn").addEventListener("click", function () { openBooking(null); });
+  $("vLogBtn").addEventListener("click", function () { if (editing) D.openLog(editing.id, editing.guest_name + " (" + editing.order_code + ")"); });
+
+  function renderPayExisting(r) {
+    var el = $("vPayExisting");
+    el.innerHTML = "";
+    var links = editing ? D.proofLinks(r) : [];
+    if (!links.length) { el.innerHTML = '<span class="muted">No payment proof uploaded yet.</span>'; return; }
+    links.forEach(function (l) {
+      var a = document.createElement("a");
+      a.href = "#"; a.textContent = l.text;
+      a.addEventListener("click", function (e) { e.preventDefault(); D.openSignedUrl(l.bucket, l.path); });
+      el.appendChild(a);
+    });
+  }
+
+  // ---------------- dates & villa availability ----------------
+  function onDates() {
+    var a = $("vIn").value, b = $("vOut").value;
+    if (a && (!b || b <= a)) { b = addDays(a, 1); $("vOut").value = b; }
+    var n = a && b ? diffDays(a, b) : 0;
+    $("vNights").value = n > 0 ? n + " night" + (n === 1 ? "" : "s") : "";
+    if (!(n > 0)) { holds = []; renderPick(); requestQuote(); return; }
+    $("vAvailNote").textContent = "Checking availability…";
+    sb.from("booking_villas").select("id,villa_id,booking_id,check_in,check_out,block_reason,provisional,cb_block_id").eq("active", true)
+      .lt("check_in", b).gt("check_out", a)
+      .then(function (res) {
+        holds = res.error ? [] : (res.data || []).filter(function (h) { return !(editing && h.booking_id === editing.id); });
+        $("vAvailNote").textContent = res.error ? "Couldn't check availability: " + res.error.message : "Tick the villa(s) for this stay. Greyed-out units are taken for some of these nights.";
+        renderPick();
+        requestQuote();
+      });
+  }
+  $("vIn").addEventListener("change", onDates);
+  $("vOut").addEventListener("change", onDates);
+
+  function whoHolds(villaId) {
+    var h = holds.filter(function (x) { return x.villa_id === villaId; })[0];
+    if (!h) return null;
+    if (!h.booking_id) return (h.cb_block_id ? "" : "Blocked: ") + (h.block_reason || "");
+    var row = D.rows().filter(function (r) { return r.id === h.booking_id; })[0];
+    return (row ? row.guest_name + " (" + row.order_code + ")" : "another booking") + " " + fmtDate(h.check_in) + "→" + fmtDate(h.check_out) +
+      (h.provisional ? " · held: Cloudbeds hasn't assigned a room of this type yet" : "");
+  }
+
+  function renderPick() {
+    var el = $("vPick");
+    el.innerHTML = "";
+    var lastType = null;
+    villas.forEach(function (v) {
+      if (v.room_type !== lastType) {
+        lastType = v.room_type;
+        var g = document.createElement("div");
+        g.className = "villa-pick-group";
+        g.textContent = v.room_type_name + " · ₱" + Number(v.weekday_rate).toLocaleString() + " / ₱" + Number(v.weekend_rate).toLocaleString();
+        el.appendChild(g);
+      }
+      var taken = whoHolds(v.id);
+      var on = picked.indexOf(v.id) !== -1;
+      var lab = document.createElement("label");
+      lab.className = "villa-opt" + (taken ? " is-taken" : "") + (on ? " is-on" : "");
+      lab.title = taken || "";
+      lab.innerHTML = '<input type="checkbox"' + (on ? " checked" : "") + ((taken && !on) || cbLock !== "none" ? " disabled" : "") + "><span>" + esc(v.unit_label) +
+        "<small>" + (taken ? esc(taken) : "Sleeps " + v.base_occupancy + (v.max_extra ? " +" + v.max_extra : "")) + "</small></span>";
+      lab.querySelector("input").addEventListener("change", function (e) {
+        if (e.target.checked) { if (picked.indexOf(v.id) === -1) picked.push(v.id); }
+        else picked = picked.filter(function (x) { return x !== v.id; });
+        renderPick();
+        requestQuote();
+      });
+      el.appendChild(lab);
+    });
+  }
+
+  // ---------------- add-ons ----------------
+  function renderAddOns() {
+    var el = $("vAddons");
+    el.innerHTML = "";
+    if (!addOns.length) { el.innerHTML = '<span class="muted">No add-ons set up (add rows with a price to the add_ons table).</span>'; return; }
+    addOns.forEach(function (a) {
+      var lab = document.createElement("label");
+      lab.className = "villa-opt" + (addonQty[a.slug] ? " is-on" : "");
+      lab.innerHTML = '<span style="flex:1;">' + esc(a.name) + "<small>" + peso(a.price) + (a.unit ? " " + esc(a.unit) : "") + '</small></span><input type="number" min="0" max="20" value="' + (addonQty[a.slug] || 0) + '" style="width:64px !important;">';
+      lab.querySelector("input").addEventListener("input", function (e) {
+        addonQty[a.slug] = Math.max(0, Math.min(20, parseInt(e.target.value || "0", 10) || 0));
+        lab.classList.toggle("is-on", addonQty[a.slug] > 0);
+        requestQuote();
+      });
+      el.appendChild(lab);
+    });
+  }
+  function addOnPayload() {
+    return Object.keys(addonQty).filter(function (k) { return addonQty[k] > 0; }).map(function (k) { return { slug: k, qty: addonQty[k] }; });
+  }
+
+
+  // ---------------- payment rule + "Cancel booking — not paid" (staff, manual) ----------------
+  // Rooms booked 14 days or less before arrival need full payment; they get a
+  // reminder 24 h after booking and are NOT cancelled automatically — staff use this.
+  function daysAhead(r) {
+    if (!r.check_in || !r.created_at) return null;
+    var made = new Date(new Date(r.created_at).toLocaleDateString("en-CA", { timeZone: "Asia/Manila" }) + "T00:00:00Z");
+    return Math.round((new Date(r.check_in + "T00:00:00Z") - made) / 86400000);
+  }
+  function renderNoPayCancel(r) {
+    var box = $("vNoPayCancel"); if (!box) return;
+    var owe = r ? (Number(r.total_amount) || 0) - (Number(r.amount_paid) || 0) : 0;
+    var active = r && !r.cb_owned && ["pending", "pending_payment", "confirmed"].indexOf(r.status) >= 0 && owe > 0.5;
+    box.hidden = !active;
+    $("vNpcBox").hidden = true; $("vNpcOpen").hidden = false; $("vNpcErr").textContent = "";
+    if (!active) return;
+    var d = daysAhead(r), paid = Number(r.amount_paid) || 0;
+    var bal = new Date(r.check_in + "T00:00:00Z"); bal.setUTCDate(bal.getUTCDate() - 15);
+    $("vNpcRule").innerHTML = d != null && d <= 14
+      ? "<b>Booked " + d + " day" + (d === 1 ? "" : "s") + " before arrival</b> &mdash; full payment is required. The guest gets a reminder 24 hours after booking; it is <b>not cancelled automatically</b>. " +
+        (paid ? "Paid so far: " + esc(peso(paid)) + " of " + esc(peso(r.total_amount)) + "." : "Nothing paid yet.") + " If they still don&rsquo;t pay, cancel it here."
+      : "<b>Booked " + (d != null ? d + " days" : "well") + " before arrival</b> &mdash; " + (paid
+        ? "50% received; balance of " + esc(peso(owe)) + " due " + esc(fmtDate(bal.toISOString().slice(0, 10))) + " (15 days before arrival). Not cancelled automatically &mdash; reminders and an overdue alert go out; cancel here if needed."
+        : "unpaid bookings are cancelled automatically 24 hours after booking. You can also cancel it now.");
+  }
+  $("vNpcOpen") && $("vNpcOpen").addEventListener("click", function () {
+    var r = editing; if (!r) return;
+    $("vNpcNote").value = "Hi {first},\n\nWe haven't received " + (Number(r.amount_paid) > 0 ? "the full payment" : "payment") +
+      " for your reservation {order} ({date}), so we've had to cancel it and release the room.\n\nIf you'd still like to stay with us, just reply to this email and we'll gladly help you rebook.";
+    $("vNpcEmail").checked = !!(r.guest_email && EMAIL_RE.test(String(r.guest_email).trim()));
+    $("vNpcEmail").disabled = !$("vNpcEmail").checked;
+    $("vNpcBox").hidden = false; $("vNpcOpen").hidden = true; $("vNpcNote").focus();
+  });
+  $("vNpcBack") && $("vNpcBack").addEventListener("click", function () { $("vNpcBox").hidden = true; $("vNpcOpen").hidden = false; });
+  $("vNpcGo") && $("vNpcGo").addEventListener("click", function () {
+    var r = editing; if (!r) return;
+    if (!confirm("Cancel " + (r.order_code || "this booking") + " for non-payment and release the room?")) return;
+    var btn = $("vNpcGo"); btn.disabled = true; $("vNpcErr").textContent = "";
+    var custom = Object.assign({}, r.email_custom || {});
+    custom.expired = { message: $("vNpcNote").value.trim(), skip: !$("vNpcEmail").checked };
+    var stamp = "[Cancelled for non-payment by " + (D.staffName() || "staff") + ", " + new Date().toLocaleDateString("en-PH", { timeZone: "Asia/Manila", month: "short", day: "numeric" }) + "]";
+    sb.from("booking_requests").update({
+      status: "expired", expire_reason: "manual_unpaid", email_custom: custom,
+      staff_notes: ((r.staff_notes || "") + (r.staff_notes ? "\n" : "") + stamp).trim(),
+    }).eq("id", r.id).then(function (res) {
+      btn.disabled = false;
+      if (res.error) { $("vNpcErr").textContent = /expire_reason/.test(res.error.message) ? "Needs the database update booking-v48." : "Couldn't cancel: " + res.error.message; return; }
+      close(); D.reload();
+    });
+  });
+
+  // ---------------- v61: "Cancel reservation" — any villa booking that is in Cloudbeds ----------------
+  // Made on the website or in Cloudbeds: staff_cancel_villa() cancels it here and
+  // cloudbeds-sync cancels it in Cloudbeds (retried every 5 min; a sync alert if it
+  // doesn't go through). Cloudbeds emails the guest only if ticked.
+  var CX_REASONS = [["guest_cancelled", "Guest cancelled"], ["correction", "Correction — re-booked or entered by mistake"],
+                    ["test", "Test booking"], ["other", "Other"]];
+  (function buildCancelBox() {
+    var anchor = $("vNoPayCancel");
+    if (!anchor) return;
+    var box = document.createElement("div");
+    box.className = "modal-field npc";
+    box.id = "vCx";
+    box.hidden = true;
+    box.innerHTML = "<label>Cancel this reservation</label>" +
+      '<p class="npc-rule" id="vCxRule"></p>' +
+      '<button type="button" class="btn-sm ghost npc-open" id="vCxOpen">Cancel reservation&hellip;</button>' +
+      '<div class="npc-box" id="vCxBox" hidden>' +
+        '<label>Why is it cancelled?</label><div id="vCxReasons">' +
+        CX_REASONS.map(function (x) { return '<label class="modal-check"><input type="radio" name="vCxReason" value="' + x[0] + '"> ' + esc(x[1]) + "</label>"; }).join("") +
+        "</div>" +
+        '<label for="vCxNote">Note <span class="muted">(optional &middot; needed for &ldquo;Other&rdquo;)</span></label><textarea id="vCxNote" rows="2"></textarea>' +
+        '<label class="modal-check"><input type="checkbox" id="vCxEmail"> Email the guest Cloudbeds&rsquo; cancellation notice</label>' +
+        '<p class="modal-hint">The reservation becomes <b>Canceled</b> here and in Cloudbeds (#<span id="vCxNo"></span>) and the room is released. Logged under your name.</p>' +
+        '<div class="npc-actions"><button type="button" class="btn-sm ghost" id="vCxBack">Keep the reservation</button> <button type="button" class="btn-sm primary npc-go" id="vCxGo">Cancel reservation now</button></div>' +
+        '<p class="modal-error" id="vCxErr"></p>' +
+      "</div>" +
+      '<p class="modal-hint" id="vCxDone" hidden></p>';
+    anchor.parentNode.insertBefore(box, anchor.nextSibling);
+
+    $("vCxOpen").addEventListener("click", function () {
+      $("vCxBox").hidden = false; $("vCxOpen").hidden = true; $("vCxErr").textContent = "";
+    });
+    $("vCxBack").addEventListener("click", function () { $("vCxBox").hidden = true; $("vCxOpen").hidden = false; });
+    $("vCxReasons").addEventListener("change", function (e) {
+      if (e.target.name !== "vCxReason") return;
+      // a real cancellation usually tells the guest; a correction or a test never should
+      $("vCxEmail").checked = e.target.value === "guest_cancelled";
+    });
+    $("vCxGo").addEventListener("click", function () {
+      var r = editing; if (!r) return;
+      var picked = box.querySelector('input[name="vCxReason"]:checked');
+      var note = $("vCxNote").value.trim(), notify = $("vCxEmail").checked;
+      if (!picked) { $("vCxErr").textContent = "Choose why it's cancelled."; return; }
+      if (picked.value === "other" && !note) { $("vCxErr").textContent = "Add a short note for “Other”."; return; }
+      if (!confirm("Cancel " + (r.order_code || "this reservation") + " here and in Cloudbeds (#" + r.cb_reservation_id + ")?\n\n" +
+                   (notify ? "Cloudbeds will email the guest a cancellation notice." : "The guest will NOT be emailed."))) return;
+      var btn = $("vCxGo"); btn.disabled = true; $("vCxErr").textContent = "";
+      sb.rpc("staff_cancel_villa", { p_booking_id: r.id, p_reason: picked.value, p_note: note || null, p_notify: notify }).then(function (res) {
+        if (res.error) {
+          btn.disabled = false;
+          $("vCxErr").textContent = /staff_cancel_villa|function/.test(res.error.message) && !/view-only|Staff only|Cloudbeds|closed|Choose|note/i.test(res.error.message)
+            ? "Needs the database update booking-v61." : "Couldn't cancel: " + res.error.message;
+          return;
+        }
+        $("vCxBox").hidden = true; $("vCxOpen").hidden = true;
+        var done = $("vCxDone"); done.hidden = false;
+        done.innerHTML = "<b>Canceled on the website.</b> Cancelling #" + esc(r.cb_reservation_id) + " in Cloudbeds&hellip;";
+        D.reload();
+        // watch for Cloudbeds to confirm (the sync updates cb_info within seconds)
+        var tries = 0;
+        (function poll() {
+          sb.from("booking_requests").select("cb_info").eq("id", r.id).single().then(function (q) {
+            var st = q && q.data && q.data.cb_info && q.data.cb_info.status;
+            if (st === "canceled") { done.innerHTML = "<b>Canceled here and in Cloudbeds ✓</b>" + (notify ? " Cloudbeds is emailing the guest." : " The guest wasn't emailed."); D.reload(); return; }
+            if (++tries < 15) { setTimeout(poll, 3000); return; }
+            done.innerHTML = "<b>Canceled on the website.</b> Cloudbeds hasn&rsquo;t confirmed it yet &mdash; it&rsquo;s retried every 5 minutes, and you&rsquo;ll get a sync alert if it doesn&rsquo;t go through. You can also cancel #" + esc(r.cb_reservation_id) + " in Cloudbeds directly.";
+          });
+        })();
+      });
+    });
+  })();
+  function renderCancel(r) {
+    var box = $("vCx"); if (!box) return;
+    var cbs = r && r.cb_info && r.cb_info.status;
+    var active = !!(r && r.id && r.stay_type === "overnight" && r.cb_reservation_id &&
+      ["pending", "pending_payment", "confirmed"].indexOf(r.status) >= 0 && ["checked_in", "checked_out"].indexOf(cbs) === -1);
+    box.hidden = !active;
+    $("vCxBox").hidden = true; $("vCxOpen").hidden = false; $("vCxErr").textContent = ""; $("vCxDone").hidden = true;
+    $("vCxGo").disabled = false; $("vCxNote").value = ""; $("vCxEmail").checked = false;
+    Array.prototype.forEach.call(box.querySelectorAll('input[name="vCxReason"]'), function (i) { i.checked = false; });
+    if (!active) return;
+    $("vCxNo").textContent = r.cb_reservation_id;
+    $("vCxRule").innerHTML = (r.cb_owned ? "Made in Cloudbeds" : "Booked on the website, now in Cloudbeds") +
+      " (#" + esc(r.cb_reservation_id) + "). Cancelling here cancels it in Cloudbeds too &mdash; use it for real cancellations, corrections and test bookings.";
+  }
+
+  // ---------------- guests ----------------
+  function renderGuests() {
+    var el = $("vGuests");
+    el.innerHTML = "";
+    var head = document.createElement("div");
+    var pSr = $("vPrimarySenior").checked;
+    head.className = "vg-row" + (pSr ? " vg-senior" : "");
+    head.innerHTML = '<span class="vg-n">1</span><input type="text" readonly tabindex="-1" value="' + esc($("vName").value || "Primary guest") + '">' +
+      '<select class="vg-type" title="Primary guest type"><option value="adult"' + (pSr ? "" : " selected") + '>Adult (13+)</option><option value="senior"' + (pSr ? " selected" : "") + '>Senior / PWD</option></select><span></span>';
+    head.querySelector("select").addEventListener("change", function (e) { $("vPrimarySenior").checked = e.target.value === "senior"; renderGuests(); requestQuote(); });
+    el.appendChild(head);
+    guests.forEach(function (g, i) {
+      var row = document.createElement("div");
+      row.className = "vg-row" + (g.name.trim() ? "" : " vg-missing") + (g.age_group === "senior" ? " vg-senior" : "");
+      row.innerHTML = '<span class="vg-n">' + (i + 2) + '</span><input type="text" placeholder="Full name (ask the guest)" value="' + esc(g.name) + '"><select>' +
+        AGE.map(function (a) { return '<option value="' + a[0] + '"' + (a[0] === g.age_group ? " selected" : "") + ">" + a[1] + "</option>"; }).join("") +
+        '</select><button type="button" title="Remove">×</button>';
+      row.querySelector("input").addEventListener("input", function (e) { g.name = e.target.value; row.classList.toggle("vg-missing", !g.name.trim()); });
+      row.querySelector("select").addEventListener("change", function (e) { g.age_group = e.target.value; renderGuests(); requestQuote(); });
+      row.querySelector("button").addEventListener("click", function () { guests.splice(i, 1); renderGuests(); requestQuote(); });
+      el.appendChild(row);
+    });
+    if (cbLock === "all") Array.prototype.forEach.call(el.querySelectorAll("select, button"), function (x) { x.disabled = true; x.setAttribute("data-cblocked", "1"); });
+    renderVPartyLine();
+  }
+  function renderVPartyLine() {
+    var pl = $("vPartyLine"); if (!pl) return;
+    var c = counts(), total = c.adults + c.k612 + c.k05, bits = [];
+    function n(x, one, many) { return x + " " + (x === 1 ? one : many); }
+    bits.push(n(c.adults, "adult", "adults") + (c.seniors ? c.seniors === c.adults ? (c.adults === 1 ? " — Senior/PWD" : " — all Senior/PWD") : " (" + c.seniors + " Senior/PWD, " + (c.adults - c.seniors) + " regular)" : ""));
+    if (c.k612) bits.push(n(c.k612, "kid 6–12", "kids 6–12"));
+    if (c.k05) bits.push(n(c.k05, "kid 0–5", "kids 0–5") + " (free)");
+    pl.innerHTML = "<b>" + n(total, "guest", "guests") + "</b> · " + esc(bits.join(" · ")) +
+      (c.seniors ? ' <span class="sr-tag">' + n(c.seniors, "Senior/PWD ID", "Senior/PWD IDs") + " needed</span>" : "");
+  }
+  $("vAddGuest").addEventListener("click", function () { guests.push({ name: "", age_group: "adult" }); renderGuests(); requestQuote(); var ins = $("vGuests").querySelectorAll("input:not([readonly])"); if (ins.length) ins[ins.length - 1].focus(); });
+  $("vPrimarySenior").addEventListener("change", function () { renderGuests(); requestQuote(); });
+  $("vName").addEventListener("input", function () { var f = $("vGuests").querySelector("input[readonly]"); if (f) f.value = $("vName").value || "Primary guest"; });
+  ["vPets", "vDiscValue", "vDiscReason"].forEach(function (id) { $(id).addEventListener("input", requestQuote); });
+  ["vDiscType", "vOverCap"].forEach(function (id) { $(id).addEventListener("change", requestQuote); });
+  $("vCode").addEventListener("change", requestQuote);
+  $("vCode").addEventListener("input", function () { clearTimeout(codeTimer); codeTimer = setTimeout(requestQuote, 600); });
+  $("vEmail").addEventListener("input", updateNotify);
+  $("vStatus").addEventListener("change", updateNotify);
+
+  function counts() {
+    var c = { adults: 1, seniors: $("vPrimarySenior").checked ? 1 : 0, k612: 0, k05: 0 };
+    guests.forEach(function (g) {
+      if (g.age_group === "senior") { c.adults++; c.seniors++; }
+      else if (g.age_group === "child_6_12") c.k612++;
+      else if (g.age_group === "child_0_5") c.k05++;
+      else c.adults++;
+    });
+    return c;
+  }
+
+  // ---------------- price ----------------
+  var keepOnline = false, codeTimer = null;
+  function codeVal() { return ($("vCode").value || "").trim().toUpperCase(); }
+  // an existing booking's own code is checked against the day it was booked
+  function codeOn() {
+    return editing && editing.discount_code && codeVal() === editing.discount_code
+      ? new Date(editing.created_at).toLocaleDateString("en-CA", { timeZone: "Asia/Manila" }) : null;
+  }
+  function requestQuote() { clearTimeout(quoteTimer); quoteTimer = setTimeout(fetchQuote, 200); }
+  function fetchQuote() {
+    var a = $("vIn").value, b = $("vOut").value, c = counts();
+    var bill = $("vBill");
+    $("vDiscValue").disabled = $("vDiscReason").disabled = !$("vDiscType").value;
+    if (!a || !b || !picked.length) {
+      lastQuote = null;
+      bill.innerHTML = '<div class="bill-lines"><div class="bill-row"><span>Set the dates and tick at least one villa</span><span>—</span></div></div>';
+      $("vCap").hidden = true;
+      updateNotify();
+      return;
+    }
+    var seq = ++quoteSeq;
+    sb.rpc("quote_overnight", { p_check_in: a, p_check_out: b, p_villa_ids: picked, p_adults: c.adults, p_seniors: c.seniors, p_kids612: c.k612, p_kids05: c.k05, p_pets: parseInt($("vPets").value || "0", 10) || 0, p_add_ons: addOnPayload(), p_online_bank: keepOnline, p_code: codeVal() || null, p_code_on: codeOn() })
+      .then(function (res) {
+        if (seq !== quoteSeq) return;
+        if (res.error) { bill.innerHTML = '<p class="bill-note" style="color:#9b2c2c;">' + esc(res.error.message) + "</p>"; return; }
+        lastQuote = res.data;
+        var cm = $("vCodeMsg");
+        cm.hidden = !codeVal();
+        cm.style.color = res.data.code_error ? "#9b2c2c" : "var(--lagoon-deep)";
+        cm.textContent = res.data.code_error ? res.data.code_error : codeVal() ? "Code " + res.data.discount_code + " applied — " + peso(res.data.code_discount) + " off." : "";
+        renderBill(res.data);
+      });
+  }
+  function discount(total) {
+    var t = $("vDiscType").value, v = Number($("vDiscValue").value) || 0;
+    if (!t || v <= 0) return 0;
+    if (t === "percent") return Math.round(total * Math.min(v, 100)) / 100;
+    return Math.min(v, total);
+  }
+  function renderBill(q) {
+    if (editing && openSig === null) openSig = priceSig();
+    var L = D.villaRows(q.lines);
+    var d = discount(Number(q.total));
+    if (d > 0) L.push(D.billRow("Discount" + ($("vDiscReason").value.trim() ? " — " + esc($("vDiscReason").value.trim()) : ""), "−" + peso(d), "discount"));
+    var total = Math.round((Number(q.total) - d) * 100) / 100;
+    var keep = keeping() && Math.abs(Number(editing.total_amount) - total) > 0.5;
+    $("vBill").innerHTML = '<div class="bill-lines">' + L.join("") + "</div>" +
+      '<div class="bill-total"><span>Total</span><span>' + peso(keep ? Number(editing.total_amount) : total) + "</span></div>" +
+      (keep ? '<p class="bill-note">Saved total kept: ' + peso(editing.total_amount) + " (rate sheet gives " + peso(total) + '). <button type="button" class="btn-sm ghost" id="vUseCalc">Use rate sheet total</button></p>' : "") +
+      '<p class="bill-note">' + q.nights + " night(s) · " + q.weekday_nights + " weekday, " + q.weekend_nights + " weekend/peak · " + q.guests + " guest(s)</p>";
+    var useBtn = $("vUseCalc");
+    if (useBtn) useBtn.addEventListener("click", function () { keepSaved = false; renderBill(q); if (vMail) vMail.refresh(); });
+    var cap = $("vCap");
+    cap.hidden = false;
+    cap.className = "cap-line" + (q.guests > q.max_capacity ? " over" : "");
+    cap.textContent = q.guests > q.max_capacity
+      ? q.guests + " guests but the villa(s) take " + q.max_capacity + " max (incl. mattresses) — add a villa" + ($("vOverCap").checked ? " (override ticked)" : "")
+      : q.guests + " guest(s) · sleeps " + q.base_capacity + (q.extra_beds ? " · " + q.extra_beds + " extra mattress(es)" : "") + " · max " + q.max_capacity;
+    updateNotify();
+  }
+
+  function updateNotify() {
+    var email = $("vEmail").value.trim(), wrap = $("vNotifyWrap"), box = $("vNotify"), txt = $("vNotifyText");
+    var ok = EMAIL_RE.test(email);
+    if (!editing) {
+      var why = !ok ? "Add the guest's email to send the quotation" : ["pending", "pending_payment"].indexOf($("vStatus").value) === -1 ? "Only Pending bookings can be sent as a quotation" : "";
+      box.disabled = !!why;
+      if (why) box.checked = false;
+      else if (!notifyTouched) box.checked = true;
+      wrap.classList.toggle("is-disabled", !!why);
+      txt.textContent = why || "Send the quotation to " + email + " when I save";
+      if (vMail) vMail.refresh();
+      return;
+    }
+    box.disabled = !ok;
+    if (!ok) box.checked = false;
+    wrap.classList.toggle("is-disabled", !ok);
+    txt.textContent = ok ? "Email " + email + " a summary of the changes when I save" : "No guest email on this booking — the guest won't be emailed";
+    if (vMail) vMail.refresh();
+  }
+
+  // ---------------- save ----------------
+  function villaText(ids) {
+    return ids.map(function (id) { return villasById[id]; }).filter(Boolean).sort(function (a, b) { return a.sort - b.sort; })
+      .map(function (v) { return v.room_type_name + " (" + v.unit_label + ")"; }).join(", ") || "—";
+  }
+  function partyText(c) {
+    var bits = [c.adults + " adult" + (c.adults === 1 ? "" : "s")];
+    if (c.seniors) bits.push("incl. " + c.seniors + " senior/PWD");
+    if (c.k612) bits.push(c.k612 + " child (6–12)");
+    if (c.k05) bits.push(c.k05 + " child (0–5)");
+    return bits.join(", ");
+  }
+  function longDate(s) { return s ? new Date(s + "T00:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" }) : "—"; }
+
+  function draftPayload() {
+    var c = counts();
+    return {
+      c: c,
+      payload: {
+        source: $("vChannel").value, status: $("vStatus").value,
+        guest_name: $("vName").value.trim(), guest_phone: $("vPhone").value.trim(), guest_email: $("vEmail").value.trim(), country: $("vCountry").value.trim(),
+        check_in: $("vIn").value, check_out: $("vOut").value, primary_is_senior: $("vPrimarySenior").checked,
+        companions: guests.map(function (g) { return { name: g.name.trim(), age_group: g.age_group }; }),
+        pet_count: parseInt($("vPets").value || "0", 10) || 0, notes: $("vNotes").value, add_ons: addOnPayload(),
+      },
+    };
+  }
+  function changeList(r, payload, c, villaIds, totalAfter) {
+    var changes = [];
+    var push = function (label, before, after) { if (before !== after) changes.push({ label: label, before: before || "—", after: after || "—" }); };
+    var beforeVillas = (r.booking_villas || []).map(function (x) { return x.villa_id; });
+    push("Check-in", longDate(r.check_in), longDate(payload.check_in));
+    push("Check-out", longDate(r.check_out), longDate(payload.check_out));
+    push("Room(s)", villaText(beforeVillas), villaText(villaIds));
+    push("Guests", partyText({ adults: r.adults || 0, seniors: r.senior_count || 0, k612: r.children_6_12 || 0, k05: r.children_0_5 || 0 }), partyText(c));
+    var namesNow = [payload.guest_name].concat(payload.companions.map(function (g) { return g.name || "(name to follow)"; })).join(", ");
+    push("Guest names", r.guest_names || "", namesNow);
+    push("Pets", String(r.pet_count || 0), String(payload.pet_count));
+    var aoText = function (list) { return (list || []).map(function (x) { var a = addOns.filter(function (o) { return o.slug === x.slug; })[0]; return x.qty + " × " + (a ? a.name : x.slug); }).join(", ") || "None"; };
+    push("Add-ons", aoText(r.add_ons), aoText(payload.add_ons));
+    if (totalAfter != null) push("Total", r.total_amount != null ? peso(r.total_amount) : "", peso(totalAfter));
+    push("Phone", r.guest_phone || "", payload.guest_phone);
+    push("Email", r.guest_email || "", payload.guest_email);
+    push("Your requests", r.notes || "", String(payload.notes || "").trim());
+    return changes;
+  }
+
+  // ---------------- "Email to the guest" panel ----------------
+  var vMail = null;
+  function mailPanel() {
+    if (vMail || !window.VBREmail) return vMail;
+    vMail = window.VBREmail.create({
+      root: $("vMail"), notifyEl: $("vNotify"),
+      mode: function () { return editing ? "change" : "quote"; },
+      overnight: function () { return true; },
+      request: function () {
+        var dp = draftPayload(), c = dp.c, pl = dp.payload;
+        var base = lastQuote ? Number(lastQuote.total) : null;
+        var disc = base != null ? discount(base) : 0;
+        var draft = Object.assign({}, pl, {
+          stay_type: "overnight", stay_type_label: "Overnight Stay", adults: c.adults, senior_count: c.seniors, children_6_12: c.k612, children_0_5: c.k05,
+          discount_type: $("vDiscType").value || null, discount_value: $("vDiscValue").value || null, discount_amount: disc, discount_reason: $("vDiscReason").value || null,
+          total_amount: keeping() ? editing.total_amount : (base != null ? base - disc : null),
+        });
+        var qp = pl.check_in && pl.check_out && picked.length ? { p_check_in: pl.check_in, p_check_out: pl.check_out, p_villa_ids: picked, p_adults: c.adults, p_seniors: c.seniors, p_kids612: c.k612, p_kids05: c.k05, p_pets: pl.pet_count, p_add_ons: pl.add_ons, p_online_bank: keepOnline, p_code: codeVal() || null, p_code_on: codeOn() } : null;
+        if (!editing) return { draft: draft, unit_ids: picked.slice(), quote_params: qp };
+        return { booking_id: editing.id, draft: draft, unit_ids: picked.slice(), quote_params: qp, changes: changeList(editing, pl, c, picked, draft.total_amount) };
+      },
+    });
+    $("vNotify").addEventListener("click", function () { notifyTouched = true; });
+    form.addEventListener("input", function () { if (vMail) vMail.refresh(); });
+    form.addEventListener("change", function () { if (vMail) vMail.refresh(); });
+    return vMail;
+  }
+
+  form.addEventListener("submit", function (e) {
+    e.preventDefault();
+    errEl.style.display = "none";
+    if (cbLock === "all") {
+      saveBtn.disabled = true;
+      var upd = { staff_notes: $("vStaffNotes").value };
+      var before = JSON.stringify((editing.companions || []).map(function (c) { return c.name || ""; }));
+      var comps = guests.map(function (g) { return { name: g.name.trim(), age_group: g.age_group }; });
+      if (JSON.stringify(comps.map(function (c) { return c.name; })) !== before) {
+        upd.companions = comps;
+        upd.guest_names = [editing.guest_name].concat(comps.map(function (g) { return g.name || "(name to follow)"; })).join(", ");
+      }
+      sb.from("booking_requests").update(upd).eq("id", editing.id).then(function (u) {
+        saveBtn.disabled = false;
+        if (u.error) return showErr("Couldn't save: " + u.error.message);
+        close();
+        D.reload();
+      });
+      return;
+    }
+    var a = $("vIn").value, b = $("vOut").value;
+    if (!$("vName").value.trim()) return showErr("Primary guest name is required.");
+    if (!a || !b || b <= a) return showErr("Set a check-out date after the check-in date.");
+    if (!picked.length) return showErr("Tick at least one villa.");
+    if ((parseInt($("vPets").value || "0", 10) || 0) > 2) return showErr("A maximum of two pets are permitted per reservation.");
+    if (lastQuote && lastQuote.guests > lastQuote.max_capacity && !$("vOverCap").checked) return showErr("Too many guests for the villa(s) picked — add a villa, or tick “Allow over capacity”.");
+    if ($("vDiscType").value === "percent" && Number($("vDiscValue").value) > 100) return showErr("A percentage discount can't be more than 100%.");
+    var c = counts();
+    var payload = {
+      source: $("vChannel").value, status: $("vStatus").value,
+      guest_name: $("vName").value.trim(), booked_by: editing ? undefined : (D.staffName() || null),
+      guest_phone: $("vPhone").value.trim(), guest_email: $("vEmail").value.trim(), country: $("vCountry").value.trim(),
+      check_in: a, check_out: b, primary_is_senior: $("vPrimarySenior").checked,
+      companions: guests.map(function (g) { return { name: g.name.trim(), age_group: g.age_group }; }),
+      pet_count: parseInt($("vPets").value || "0", 10) || 0,
+      discount_type: $("vDiscType").value, discount_value: $("vDiscValue").value, discount_reason: $("vDiscReason").value,
+      notes: $("vNotes").value, staff_notes: $("vStaffNotes").value,
+      keep_total: keeping(), total_amount: keeping() ? editing.total_amount : null,
+      allow_over_capacity: $("vOverCap").checked,
+      add_ons: addOnPayload(), discount_code: codeVal() || null,
+    };
+    var file = $("vPayFile").files && $("vPayFile").files[0];
+    var r = editing;
+    var beforeVillas = r ? (r.booking_villas || []).map(function (x) { return x.villa_id; }) : [];
+    var notify = $("vNotify").checked && !$("vNotify").disabled;
+    saveBtn.disabled = true;
+    saveBtn.textContent = notify ? (r ? "Saving & emailing…" : "Saving & sending…") : "Saving…";
+    sb.rpc("staff_save_overnight", { p_id: r ? r.id : null, payload: payload, p_villa_ids: picked })
+      .then(function (res) {
+        if (res.error) throw res.error;
+        var saved = Array.isArray(res.data) ? res.data[0] : res.data;
+        var jobs = Promise.resolve();
+        if (file) {
+          // A proof uploaded by staff is a verified payment (Payments, Cloudbeds folio, confirmation).
+          jobs = jobs.then(function () { return D.uploadProof({ id: saved.id }, file); }).then(function (path) {
+            return D.attachProof(saved.id, path, $("vPayPortion"));
+          });
+        }
+        if (!r && notify) {
+          var mv = vMail ? vMail.value() : { subject: "", message: "" };
+          var upd = { email_guest: true };
+          if (mv.message || mv.subject) upd.email_custom = { quote: { subject: mv.subject || null, message: mv.message || null } };
+          jobs = jobs.then(function () { return sb.from("booking_requests").update(upd).eq("id", saved.id).then(function (u) { if (u.error) throw u.error; }); });
+        }
+        if (r && notify) {
+          var changes = changeList(r, payload, c, picked, saved.total != null ? saved.total : null);
+          if (changes.length) {
+            jobs = jobs.then(function () {
+              var mv = vMail ? vMail.value() : { message: "" };
+              return sb.rpc("notify_booking_change", { p_booking_id: r.id, p_changes: changes, p_old_check_in: r.check_in !== a ? r.check_in : null, p_message: mv.message || null });
+            });
+          }
+        }
+        return jobs.then(function () { return saved; });
+      })
+      .then(function () {
+        saveBtn.disabled = false;
+        close();
+        return D.reload().then(function () { if (calOpen()) renderCal(); });
+      })
+      .catch(function (err) {
+        saveBtn.textContent = editing ? "Save Changes" : "Save Booking";
+        showErr("Couldn't save: " + (err && err.message ? err.message : err));
+      });
+  });
+
+  // ======================================================================
+  // Room Calendar
+  // ======================================================================
+  var calBackdrop = $("villaCalBackdrop"), calTable = $("calTable");
+  var calHolds = [], peaks = [];
+  function calOpen() { return calBackdrop.classList.contains("open"); }
+
+  $("villaCalBtn").addEventListener("click", function () {
+    if (!$("calStart").value) $("calStart").value = addDays(todayStr(), -1);
+    calBackdrop.classList.add("open");
+    renderCal();
+  });
+  $("calClose").addEventListener("click", function () { calBackdrop.classList.remove("open"); });
+  calBackdrop.addEventListener("click", function (e) { if (e.target === calBackdrop) calBackdrop.classList.remove("open"); });
+  $("calStart").addEventListener("change", renderCal);
+  $("calDays").addEventListener("change", renderCal);
+  $("calPrev").addEventListener("click", function () { $("calStart").value = addDays($("calStart").value, -7); renderCal(); });
+  $("calNext").addEventListener("click", function () { $("calStart").value = addDays($("calStart").value, 7); renderCal(); });
+  $("calToday").addEventListener("click", function () { $("calStart").value = addDays(todayStr(), -1); renderCal(); });
+
+  function renderCal() {
+    var start = $("calStart").value || todayStr();
+    var n = parseInt($("calDays").value, 10) || 21;
+    var end = addDays(start, n);
+    $("calStatus").textContent = "Loading…";
+    Promise.all([
+      sb.from("booking_villas").select("id,villa_id,booking_id,check_in,check_out,block_reason,provisional,cb_block_id").eq("active", true).lt("check_in", end).gt("check_out", start),
+      sb.from("peak_dates").select("*").order("night"),
+    ]).then(function (res) {
+      if (res[0].error) { $("calStatus").textContent = "Couldn't load: " + res[0].error.message; return; }
+      calHolds = res[0].data || [];
+      peaks = res[1].data || [];
+      drawCal(start, n);
+      drawPeaks();
+    });
+  }
+
+  function drawCal(start, n) {
+    var rowsById = {};
+    D.rows().forEach(function (r) { rowsById[r.id] = r; });
+    var peakSet = {};
+    peaks.forEach(function (p) { peakSet[p.night] = p.label || "Peak"; });
+    var days = [];
+    for (var i = 0; i < n; i++) days.push(addDays(start, i));
+    var today = todayStr();
+    var html = '<thead><tr><th class="unit">Room</th>' + days.map(function (d) {
+      var w = dow(d), we = w === 5 || w === 6;
+      var dt = new Date(d + "T00:00:00Z");
+      return '<th class="' + (we ? "we " : "") + (peakSet[d] ? "peak " : "") + (d === today ? "today" : "") + '" title="' + esc(peakSet[d] || "") + '">' +
+        ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][w] + "<br><b>" + dt.toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "numeric" }) + "</b></th>";
+    }).join("") + "</tr></thead><tbody>";
+    var occupied = 0;
+    villas.forEach(function (v) {
+      html += '<tr><th class="unit">' + esc(v.unit_label) + "<small>" + esc(v.room_type_name) + "</small></th>";
+      var mine = calHolds.filter(function (h) { return h.villa_id === v.id; });
+      for (var i = 0; i < n; ) {
+        var d = days[i];
+        var h = mine.filter(function (x) { return x.check_in <= d && x.check_out > d; })[0];
+        if (!h) {
+          var w = dow(d);
+          html += '<td class="free' + (w === 5 || w === 6 || peakSet[d] ? " we" : "") + '" data-villa="' + v.id + '" data-night="' + d + '"></td>';
+          i++;
+          continue;
+        }
+        var span = Math.min(diffDays(d, h.check_out), n - i);
+        occupied += span;
+        var r = h.booking_id ? rowsById[h.booking_id] : null;
+        var cls = (h.booking_id ? "st-" + (r ? r.status : "pending") : "st-block") + (h.provisional ? " provisional" : "");
+        if (r && r.cb_info && r.cb_info.status) cls += " cbs-" + r.cb_info.status;
+        if (!h.booking_id && h.cb_block_id) cls += " cb-hold";
+        if (h.check_in < d) cls += " cont-l";
+        if (h.check_out > addDays(start, n)) cls += " cont-r";
+        var title = h.booking_id
+          ? (r ? r.guest_name + " · " + r.order_code + " · " + (D.STATUS_LABELS[r.status] || r.status) + " · " + ((r.adults || 0) + (r.children_6_12 || 0) + (r.children_0_5 || 0)) + " pax · " + (D.SOURCE_LABELS[r.source] || r.source) : "Booking")
+          : "Blocked: " + (h.block_reason || "");
+        var label = h.booking_id ? (r ? r.guest_name : "Booking") + (h.provisional ? " (unassigned)" : "") : (h.cb_block_id ? "" : "Blocked — ") + (h.block_reason || "");
+        var sub = h.booking_id && r ? r.order_code + " · " + ((r.adults || 0) + (r.children_6_12 || 0) + (r.children_0_5 || 0)) + " pax" : fmtDate(h.check_in) + "→" + fmtDate(h.check_out);
+        html += '<td colspan="' + span + '"><div class="cal-bk ' + cls + '" data-hold="' + h.id + '" data-booking="' + (h.booking_id || "") + '" title="'  + esc(title) + '">' + esc(label) + "<small>" + esc(sub) + "</small></div></td>";
+        i += span;
+      }
+      html += "</tr>";
+    });
+    calTable.innerHTML = html + "</tbody>";
+    $("calStatus").textContent = Math.round(occupied / (villas.length * n) * 100) + "% occupied in this view";
+  }
+
+  calTable.addEventListener("click", function (e) {
+    var bk = e.target.closest(".cal-bk");
+    if (bk) {
+      var h = calHolds.filter(function (x) { return x.id === bk.getAttribute("data-hold"); })[0];
+      if (!h) return;
+      if (h.booking_id) {
+        var r = D.rows().filter(function (x) { return x.id === h.booking_id; })[0];
+        if (r) openBooking(r);
+        return;
+      }
+      var v = villasById[h.villa_id];
+      if (h.cb_block_id) { alert("This block was made in Cloudbeds (" + (h.block_reason || "") + "). Remove it in Cloudbeds — the website follows within a few minutes."); return; }
+      if (confirm("Remove the block on " + (v ? v.unit_label : "this villa") + " (" + fmtDate(h.check_in) + " → " + fmtDate(h.check_out) + ")?\n\n" + (h.block_reason || ""))) {
+        sb.from("booking_villas").delete().eq("id", h.id).then(function (res) {
+          if (res.error) alert("Couldn't remove the block: " + res.error.message);
+          renderCal();
+        });
+      }
+      return;
+    }
+    var td = e.target.closest("td.free");
+    if (td) openBooking(null, { villa_id: td.getAttribute("data-villa"), check_in: td.getAttribute("data-night"), check_out: addDays(td.getAttribute("data-night"), 1) });
+  });
+
+  // ---------------- blocks ----------------
+  function fillBlockSelect() {
+    var sel = $("blkVilla");
+    if (!sel) return;
+    sel.innerHTML = villas.map(function (v) { return '<option value="' + v.id + '">' + esc(v.unit_label + " — " + v.room_type_name) + "</option>"; }).join("");
+  }
+  $("blkSave").addEventListener("click", function () {
+    var err = $("blkError");
+    err.style.display = "none";
+    var a = $("blkIn").value, b = $("blkOut").value, reason = $("blkReason").value.trim();
+    var fail = function (m) { err.textContent = m; err.style.display = "block"; };
+    if (!a || !b || b <= a) return fail("Set the first night and the day the villa is free again (after the first night).");
+    if (!reason) return fail("Add a reason (shown on the calendar and in the activity log).");
+    sb.from("booking_villas").insert([{ villa_id: $("blkVilla").value, check_in: a, check_out: b, block_reason: reason }]).then(function (res) {
+      if (res.error) return fail(/overlap|exclusion|conflict/i.test(res.error.message) ? "That villa already has a booking or block on some of those nights." : res.error.message);
+      $("blkReason").value = "";
+      renderCal();
+    });
+  });
+  $("blkIn").addEventListener("change", function () { if ($("blkIn").value && (!$("blkOut").value || $("blkOut").value <= $("blkIn").value)) $("blkOut").value = addDays($("blkIn").value, 1); });
+
+  // ---------------- peak dates ----------------
+  function drawPeaks() {
+    var ul = $("peakList");
+    var upcoming = peaks.filter(function (p) { return p.night >= addDays(todayStr(), -1); });
+    ul.innerHTML = upcoming.length ? "" : '<li class="muted">No upcoming peak nights. Fridays &amp; Saturdays are always weekend rate.</li>';
+    upcoming.forEach(function (p) {
+      var li = document.createElement("li");
+      li.innerHTML = "<span><b>" + esc(fmtDate(p.night)) + "</b> " + esc(p.label || "") + '</span><button type="button" title="Remove">Remove</button>';
+      li.querySelector("button").addEventListener("click", function () {
+        sb.from("peak_dates").delete().eq("night", p.night).then(function (res) { if (res.error) alert(res.error.message); renderCal(); });
+      });
+      ul.appendChild(li);
+    });
+  }
+  $("peakAdd").addEventListener("click", function () {
+    var d = $("peakDate").value;
+    if (!d) return;
+    sb.from("peak_dates").insert([{ night: d, label: $("peakLabel").value.trim() || null }]).then(function (res) {
+      if (res.error) alert(/duplicate/i.test(res.error.message) ? "That night is already a peak night." : res.error.message);
+      $("peakLabel").value = "";
+      renderCal();
+    });
+  });
+
+  window.VBRVillas = { init: init, labelsFor: labelsFor, openBooking: openBooking, villas: function () { return villas; },
+    villasFor: function (r) { return (r.booking_villas || []).map(function (bv) { return villasById[bv.villa_id]; }).filter(Boolean).sort(function (a, b) { return a.sort - b.sort; }); } };
+})();

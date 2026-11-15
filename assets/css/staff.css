@@ -1,0 +1,284 @@
+/* =========================================================================
+   Z Hostel — staff tools stylesheet (staff/ and manager/ only).
+   The parts of the VBR booking engine's stylesheet the staff dashboard and
+   manager summary use, re-themed to Z Hostel: black / charcoal with the
+   Z Hostel yellow, Raleway. The public site uses site.css instead.
+   Light theme only: the dashboard has many fixed light status colours.
+   ========================================================================= */
+
+:root {
+  --sand: #f2f2f2;
+  --sand-deep: #e6e6e6;
+  --surface: #ffffff;
+  --ink: #222222;
+  --ink-soft: #666666;
+  --line: #d9d9d9;
+  --lagoon: #292929;          /* primary action (white text on it) */
+  --lagoon-deep: #000000;
+  --lagoon-tint: #fff4d1;     /* pale Z Hostel yellow */
+  --yellow: #ffc425;
+  --driftwood: #a3a3a3;
+  --night: #292929;
+  --night-2: #333333;
+  --night-ink: #f2f2f2;
+  --shadow: 0 20px 60px -30px rgba(0, 0, 0, 0.35);
+
+  --font-display: "Raleway", Arial, sans-serif;
+  --font-body: "Raleway", Arial, sans-serif;
+
+  --max-prose: 62ch;
+  --max-page: 1320px;
+  --gutter: clamp(20px, 5vw, 64px);
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  * { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
+}
+
+body {
+  margin: 0;
+  background: var(--sand);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+img { max-width: 100%; display: block; }
+a { color: inherit; }
+
+h1, h2, h3, h4 {
+  font-family: var(--font-display);
+  font-weight: 500;
+  line-height: 1.12;
+  margin: 0;
+  text-wrap: balance;
+}
+h1 { font-size: clamp(2.4rem, 5vw, 4.2rem); font-weight: 460; }
+h2 { font-size: clamp(1.7rem, 3.2vw, 2.6rem); }
+h3 { font-size: clamp(1.25rem, 2vw, 1.6rem); }
+
+p { margin: 0 0 1em; color: var(--ink-soft); }
+p:last-child { margin-bottom: 0; }
+
+.prose { max-width: var(--max-prose); }
+.prose p { font-size: 1.05rem; }
+
+.eyebrow {
+  display: inline-block;
+  font-family: var(--font-body);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--lagoon-deep);
+  margin-bottom: 14px;
+}
+
+.definition {
+  font-family: var(--font-display);
+  font-style: italic;
+  color: var(--ink);
+}
+.definition .pos { font-style: normal; font-size: 0.7em; color: var(--ink-soft); letter-spacing: 0.04em; }
+
+.wrap {
+  max-width: var(--max-page);
+  margin: 0 auto;
+  padding-left: var(--gutter);
+  padding-right: var(--gutter);
+}
+
+section { padding: clamp(56px, 9vw, 128px) 0; }
+.section-tight { padding: clamp(36px, 6vw, 72px) 0; }
+
+/* ---------- buttons / links ---------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-body);
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-decoration: none;
+  padding: 15px 30px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  transition: background 0.25s ease, color 0.25s ease, border-color 0.25s ease, transform 0.25s ease;
+  cursor: pointer;
+}
+.btn-primary { background: var(--lagoon); color: #fff; }
+.btn-primary:hover { background: var(--lagoon-deep); transform: translateY(-1px); }
+.btn-ghost { border-color: currentColor; color: var(--ink); }
+.btn-ghost:hover { background: var(--ink); color: var(--sand); }
+.btn-on-dark { border-color: rgba(238,231,214,0.5); color: var(--night-ink); }
+.btn-on-dark:hover { background: var(--night-ink); color: var(--night); }
+
+.text-link {
+  text-decoration: underline;
+  text-decoration-color: var(--driftwood);
+  text-underline-offset: 4px;
+  text-decoration-thickness: 1px;
+}
+.text-link:hover { text-decoration-color: var(--lagoon); }
+
+
+/* ---------- stats / pricing table ---------- */
+.rate-table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
+.rate-table th, .rate-table td { text-align: left; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.rate-table th { font-size: 0.72rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-soft); font-weight: 700; }
+.rate-table td.num, .rate-table th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.table-wrap { overflow-x: auto; }
+
+.spec-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(2,1fr); gap: 14px 24px; }
+.spec-list li { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line); padding-bottom: 10px; font-size: 0.92rem; }
+.spec-list .k { color: var(--ink-soft); }
+.spec-list .v { font-weight: 600; }
+@media (max-width: 560px) { .spec-list { grid-template-columns: 1fr; } }
+
+.feature-tags { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+.feature-tags span { font-size: 0.82rem; padding: 7px 14px; border: 1px solid var(--line); border-radius: 999px; color: var(--ink-soft); }
+
+.fine-print { font-size: 0.82rem; color: var(--ink-soft); border-top: 1px solid var(--line); padding-top: 18px; margin-top: 28px; }
+.fine-print p { font-size: inherit; margin-bottom: 0.4em; }
+
+
+/* ---------- contact ---------- */
+.contact-grid { display: grid; grid-template-columns: 1fr 1fr; gap: clamp(32px,5vw,72px); }
+@media (max-width: 860px) { .contact-grid { grid-template-columns: 1fr; } }
+.contact-block + .contact-block { margin-top: 34px; }
+.contact-block h3 { font-size: 0.78rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--lagoon-deep); margin-bottom: 10px; font-family: var(--font-body); font-weight: 700; }
+.contact-block p { font-size: 1rem; color: var(--ink); }
+.map-frame { border-radius: 6px; overflow: hidden; border: 1px solid var(--line); aspect-ratio: 4/3; }
+.map-frame iframe { width: 100%; height: 100%; border: 0; }
+
+form.inquiry { display: grid; gap: 16px; }
+form.inquiry .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 560px) { form.inquiry .row-2 { grid-template-columns: 1fr; } }
+form.inquiry label { display: block; font-size: 0.78rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-soft); margin-bottom: 6px; }
+form.inquiry input, form.inquiry select, form.inquiry textarea {
+  width: 100%; padding: 13px 14px; border: 1px solid var(--line); border-radius: 4px;
+  background: var(--surface); color: var(--ink); font-family: var(--font-body); font-size: 0.95rem;
+}
+form.inquiry textarea { min-height: 120px; resize: vertical; }
+form.inquiry button { justify-self: start; margin-top: 6px; border: none; }
+form.inquiry button:disabled { opacity: 0.6; cursor: not-allowed; }
+form.inquiry .field-hint { font-size: 0.8rem; color: var(--ink-soft); margin-top: -8px; }
+
+.form-status {
+  border-radius: 6px;
+  padding: 28px 30px;
+  font-size: 0.98rem;
+}
+.form-status-success { background: var(--lagoon-tint); border: 1px solid var(--lagoon); color: var(--ink); }
+.form-status-success h3 { font-family: var(--font-display); margin-bottom: 10px; }
+.form-status-error { background: var(--sand-deep); border: 1px solid var(--driftwood); color: var(--ink); }
+
+.stay-type-tabs { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 8px; }
+
+
+/* ---------- live bill summary ---------- */
+.bill-summary { border: 1px solid var(--line); border-radius: 10px; padding: 22px 24px; background: var(--sand); }
+.bill-lines { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+.bill-row { display: flex; justify-content: space-between; gap: 16px; font-size: 0.88rem; color: var(--ink-soft); }
+.bill-row em { font-style: normal; color: var(--lagoon-deep); }
+.bill-warning { background: var(--sand-deep); border-radius: 6px; padding: 10px 14px; font-size: 0.84rem; color: var(--ink); margin-bottom: 14px; }
+.bill-warning.is-error { background: #f8e3dc; color: #8a3a2b; font-weight: 600; }
+.bill-total { display: flex; justify-content: space-between; align-items: baseline; padding-top: 14px; border-top: 1px solid var(--line); font-family: var(--font-display); font-size: 1.25rem; font-weight: 600; }
+
+/* ---------- payment proof upload ---------- */
+.upload-drop {
+  border: 1.5px dashed var(--line); border-radius: 8px; padding: 26px; text-align: center;
+  background: var(--surface); cursor: pointer; font-size: 0.92rem; color: var(--ink-soft);
+}
+.upload-drop input[type="file"] { display: block; margin: 12px auto 0; }
+.upload-preview { max-width: 220px; border-radius: 6px; margin-top: 14px; display: none; }
+
+/* ---------- misc ---------- */
+.center { text-align: center; }
+.mx-auto { margin-left: auto; margin-right: auto; }
+.mt-lg { margin-top: clamp(40px, 6vw, 72px); }
+.two-col-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 24px; flex-wrap: wrap; margin-bottom: 44px; }
+
+
+/* ---------- overnight stay booking (book-stay/) ---------- */
+.stay-step { border-top: 1px solid var(--line); padding-top: 26px; margin-top: 10px; }
+.stay-step:first-child { border-top: 0; padding-top: 0; margin-top: 0; }
+.stay-step-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 14px; }
+.stay-step-num { flex: none; width: 28px; height: 28px; border-radius: 50%; background: var(--lagoon); color: #fff; font-weight: 700; font-size: 0.85rem; display: inline-flex; align-items: center; justify-content: center; }
+.stay-step-head h2 { font-size: 1.35rem; margin: 0; }
+.stay-step-head p { margin: 2px 0 0; font-size: 0.86rem; color: var(--ink-soft); }
+.stay-nights { font-size: 0.9rem; color: var(--lagoon-deep); font-weight: 700; margin-top: 4px; min-height: 1.3em; }
+
+.villa-type-list { display: grid; gap: 14px; }
+.villa-type { display: grid; grid-template-columns: 150px 1fr auto; gap: 18px; align-items: center; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); padding: 12px; transition: border-color .15s, box-shadow .15s; }
+.villa-type.is-picked { border-color: var(--lagoon); box-shadow: 0 0 0 1px var(--lagoon); }
+.villa-type.is-full { opacity: 0.55; }
+.villa-type img { width: 150px; height: 108px; object-fit: cover; border-radius: 6px; display: block; }
+.villa-type h3 { font-size: 1.08rem; margin: 0 0 4px; }
+.villa-type .vt-meta { font-size: 0.8rem; color: var(--ink-soft); line-height: 1.5; }
+.villa-type .vt-rate { font-size: 0.84rem; margin-top: 4px; }
+.villa-type .vt-rate b { font-family: var(--font-display); font-weight: 600; font-size: 1rem; }
+.villa-type .vt-avail { font-size: 0.78rem; font-weight: 700; letter-spacing: .03em; margin-top: 6px; color: var(--lagoon-deep); }
+.villa-type.is-full .vt-avail { color: #9c4a3f; }
+.stepper { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 999px; background: var(--sand); }
+.stepper button { width: 38px; height: 38px; border: 0 !important; background: transparent; font-size: 1.2rem; color: var(--ink); cursor: pointer; margin: 0 !important; border-radius: 50%; }
+.stepper button:disabled { opacity: .3; cursor: not-allowed; }
+.stepper output { min-width: 26px; text-align: center; font-weight: 700; }
+@media (max-width: 620px) {
+  .villa-type { grid-template-columns: 96px 1fr; }
+  .villa-type img { width: 96px; height: 84px; }
+  .villa-type .stepper { grid-column: 1 / -1; justify-self: end; }
+}
+.villa-picked-note { font-size: 0.86rem; background: var(--lagoon-tint); border-radius: 8px; padding: 10px 14px; }
+
+.guest-list { display: grid; gap: 10px; }
+.guest-row { display: grid; grid-template-columns: 34px 1fr 210px; gap: 10px; align-items: center; }
+.guest-row .gr-num { width: 30px; height: 30px; border-radius: 50%; background: var(--sand-deep); font-size: 0.8rem; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; color: var(--ink-soft); }
+.guest-row.is-primary .gr-num { background: var(--lagoon); color: #fff; }
+.guest-row.is-invalid input, .guest-row.is-invalid select { border-color: #9c4a3f !important; background: #fbefec !important; }
+.guest-row .gr-primary-name { padding: 13px 14px; border: 1px dashed var(--line); border-radius: 4px; font-size: 0.95rem; color: var(--ink-soft); background: var(--sand); }
+@media (max-width: 560px) {
+  .guest-row { grid-template-columns: 30px 1fr; }
+  .guest-row select, .guest-row .gr-age { grid-column: 2; }
+}
+.capacity-meter { font-size: 0.85rem; border-radius: 8px; padding: 10px 14px; background: var(--sand-deep); }
+.capacity-meter.is-over { background: #fbe4e4; color: #9b2c2c; font-weight: 600; }
+.capacity-meter.is-ok { background: var(--lagoon-tint); }
+.inline-check { display: flex !important; align-items: flex-start; gap: 8px; text-transform: none !important; letter-spacing: 0 !important; font-size: 0.9rem !important; color: var(--ink) !important; }
+.inline-check input { width: auto !important; margin-top: 4px; }
+.form-error-box { background: #fbe4e4; color: #9b2c2c; border-radius: 8px; padding: 12px 16px; font-size: 0.9rem; }
+.bill-row.is-discount span:last-child { color: var(--lagoon-deep); }
+.bill-sub { font-size: 0.78rem; color: var(--ink-soft); margin-top: 2px; }
+
+
+/* v51 — booking request (stays past the online booking window) */
+.request-banner { margin: 14px 0 0; padding: 14px 16px; border-radius: 10px; background: #fbf3df; border: 1px solid #e6cf94; color: var(--ink); font-size: 0.9rem; line-height: 1.5; }
+.request-banner .rb-title { margin: 0 0 6px; font-weight: 700; font-size: 0.95rem; color: #7a5a12; }
+.request-banner p { margin: 0 0 8px; }
+.request-banner ul { margin: 0; padding-left: 18px; }
+.request-banner li { margin: 2px 0; }
+.inline-check[hidden] { display: none !important; }
+.bill-request-note { background: #fbf3df; border: 1px solid #e6cf94; border-radius: 6px; padding: 10px 14px; font-size: 0.84rem; color: var(--ink); margin: 0 0 14px; }
+.villa-type.is-request .vt-avail { color: #7a5a12; }
+.request-agree { background: #fbf3df; border-radius: 8px; padding: 10px 12px; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .request-banner, :root:not([data-theme="light"]) .bill-request-note, :root:not([data-theme="light"]) .request-agree { background: #2b2414; border-color: #6b5422; }
+  :root:not([data-theme="light"]) .request-banner .rb-title, :root:not([data-theme="light"]) .villa-type.is-request .vt-avail { color: #e8c36a; }
+}
+:root[data-theme="dark"] .request-banner, :root[data-theme="dark"] .bill-request-note, :root[data-theme="dark"] .request-agree { background: #2b2414; border-color: #6b5422; }
+:root[data-theme="dark"] .request-banner .rb-title, :root[data-theme="dark"] .villa-type.is-request .vt-avail { color: #e8c36a; }
+
+
+/* ---------- Z Hostel touches ---------- */
+.sec-tab[hidden] { display: none !important; }
+.dash-brand img, .mgr-brand img { background: var(--yellow); border-radius: 8px; }
+h1, h2, h3, h4 { font-weight: 700; }
+.zh-hide { display: none !important; }   /* VBR day-trip / cabana controls kept in the page for the shared scripts, not shown at the hostel */
