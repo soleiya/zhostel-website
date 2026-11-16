@@ -219,9 +219,12 @@ def hero(key, video=True):
            f'<source src="/wp-content/uploads/2022/04/zcover.m4v" type="video/mp4"></video>') if video and key == "home" and have("/wp-content/uploads/2022/04/zcover.m4v") else ""
     logo = f'<img class="logo" src="{h["logo"]}" alt="Z Hostel" width="150" height="150">' if have(h.get("logo")) else '<div class="logo-text" aria-hidden="true">Z</div>'
     if key == "home":
+        bg = ' style="background-image:url(\'/assets/img/zhostel-entrance.jpg\')"'
+        vid = ""
+        logo = '<img class="logo logo--brand" src="/wp-content/uploads/2018/08/Logo.png" alt="Z Hostel" width="150" height="150">'
         return f"""<header class="hero hero--home"{bg}>{vid}
-{logo}<p class="hero-kicker">Z Hostel &middot; Poblacion, Makati</p><h1>The Original Poblacion Hostel</h1>
-<p class="sub">Good vibes only &mdash; in Poblacion since 2015.</p>
+{logo}<p class="hero-kicker">Z Hostel &middot; Poblacion, Makati</p><h1>Good Vibes Only</h1>
+<p class="sub">The OG Hostel in Poblacion, the one who started it all.</p>
 <div class="hero-book">{quickbook("qbh")}</div>
 </header>
 """
@@ -414,13 +417,17 @@ def build_home():
 <section class="section"><div class="container text-center">{title('Explore Z')}
 <div class="tiles">{''.join(tiles)}</div></div></section>
 <section class="section section--grey"><div class="container text-center">{title('Amenities & Services')}{amenities(AMENITIES)}</div></section>
-{banner(D['ul']['gettingThere'])}
+<section class="section section--grey" id="getting-there"><div class="container"><div class="split building-split">
+<img src="/assets/img/z-hostel-building.jpg" alt="The Z Hostel building in Poblacion, Makati, with the roofdeck on top" width="880" height="1184" loading="lazy">
+<div><h2 class="section-title">Getting There</h2><p><strong>{ADDRESS}</strong></p>
+<p>Look for the big Z on the building &mdash; the roofdeck is on top, the entrance is on Don Pedro St., right off Kalayaan Ave.</p>
+<p><a class="btn btn-dark" href="{MAP_LINK}" target="_blank" rel="noopener">Open in Google Maps</a> <a class="btn btn-outline" href="{DIRECTIONS_PDF}" target="_blank" rel="noopener">Directions (PDF)</a></p></div></div></div></section>
 <section class="section"><div class="container"><div class="prose faq-teaser"><h2 class="section-title">Good to know</h2>{faq_teaser}<p><a class="text-link" href="/faq/">All questions about staying at Z Hostel &rarr;</a></p></div></div></section>
 <section class="section section--grey"><div class="container text-center">{title('Reviews')}{reviews(D['rv'])}</div></section>
 {contact_section()}"""
     page("/", "Z Hostel Makati — The Original Poblacion Hostel & Z Roofdeck | Book Direct",
          "Z Hostel, the original Poblacion hostel in Makati, Manila since 2015: dorm beds from ₱1,250 and private rooms with breakfast, the Z Cafe and the legendary Z Roofdeck bar. Book direct for the best rate.",
-         body, "home", image=CBP["private-room-standard"][0])
+         body, "home", image="/assets/img/zhostel-entrance.jpg")
 
 
 # ============================================================== ABOUT
