@@ -1,0 +1,25 @@
+name: Unpack Z Hostel photos
+on:
+  push:
+    paths: [".github/workflows/unpack-photos.yml"]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  unpack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify and unpack wp-content
+        run: |
+          cd _photo-upload && sha256sum -c SHA256SUMS && cd ..
+          cat _photo-upload/zh-photos.tar.part* | tar -xf -
+          echo "files: $(find wp-content -type f | wc -l)"
+      - name: Commit photos, remove the upload folder and this workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm -r -q _photo-upload .github/workflows/unpack-photos.yml
+          git add wp-content
+          git commit -q -m "Photos: wp-content from zhostel.com (743 files); remove temporary upload folder"
+          git push
